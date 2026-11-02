@@ -1,0 +1,27 @@
+{
+  "name": "what-will-your-life-cost",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/export-artifact.mjs",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "preview": "vite preview --host 0.0.0.0",
+    "publish:pages": "npm run build && node scripts/publish-pages.mjs",
+    "test:a11y": "node scripts/accessibility.mjs",
+    "format": "prettier --write src tests scripts *.js *.html *.json *.md"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.58.1",
+    "prettier": "^3.9.10",
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
+  }
+}
