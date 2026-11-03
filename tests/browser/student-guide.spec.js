@@ -64,7 +64,9 @@ test("a student can complete all 13 steps and reach a coherent personal budget",
     page.getByText("Student loan payment", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Savings (10% of take-home)", { exact: true }),
+    page.getByText("General savings target (10% at required income)", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(page.getByText(/Assumed net side income/)).toBeVisible();
   await page

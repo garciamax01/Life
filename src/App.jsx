@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useId } from "react";
 
 // Data preserved from Max's original classroom calculator. Prices are editable
 // planning scenarios, not verified 2026 local averages or insurance quotes.
@@ -22,6 +22,13 @@ const fmt = (n) =>
     style: "currency",
     currency: "USD",
     maximumFractionDigits: 0,
+  }).format(Number.isFinite(n) ? n : 0);
+const hourly = (n) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(Number.isFinite(n) ? n : 0);
 const number = (n, limit = 10000000) =>
   Math.max(0, Math.min(limit, Number(n) || 0));
@@ -218,6 +225,12 @@ const UTILS = [
 ];
 const FOOD = [
   {
+    id: "included",
+    l: "Meals covered or included",
+    cost: 0,
+    note: "For example, included in your contribution at home. The cost is paid elsewhere.",
+  },
+  {
     id: "home",
     l: "Cook at Home",
     cost: 350,
@@ -256,6 +269,14 @@ const TRANS = [
     cost: 75,
     note: "Example transit budget; check current RTA fares",
     car: false,
+  },
+  {
+    id: "paid",
+    l: "Paid-off / Hand-me-down Car",
+    cost: 0,
+    note: "No loan payment; insurance, fuel, registration, and repairs still count",
+    car: true,
+    ct: "beater",
   },
   {
     id: "beater",
@@ -428,7 +449,7 @@ const CARE = [
     id: "full",
     l: "Full Self-Care Routine",
     cost: 200,
-    note: "Skincare, gym, salon, spa",
+    note: "Skincare, gym, salon, spa. Gym is counted once if also selected under Leisure.",
   },
 ];
 const MISC = [
@@ -480,13 +501,13 @@ const HTYPE = [
     id: "partner_work",
     l: "Partner who works full-time",
     e: "💑",
-    note: "Split shared housing and utilities; income shown is yours",
+    note: "Choose your bill share; household mode can include both incomes",
   },
   {
     id: "partner_home",
     l: "Stay-at-home partner",
     e: "🏡",
-    note: "Model no paid daycare and food for two adults",
+    note: "Start with no paid daycare and include both adults’ listed costs",
   },
   {
     id: "single_parent",
@@ -881,6 +902,28 @@ const EMPTY = {
   savings: null,
   loan: 0,
   hustle: 0,
+  budgetMode: "personal",
+  personalHomeShare: null,
+  householdHomeShare: null,
+  partnerSalary: 0,
+  partnerFood: null,
+  partnerTransport: null,
+  partnerHealth: null,
+  partnerPersonal: null,
+  childSharePercent: null,
+  childcareBudget: null,
+  childSuppliesBudget: null,
+  medicalReserve: 0,
+  hustleMode: "net",
+  comparisonSalary: null,
+  comparisonCareer: "",
+  comparisonHours: 40,
+  comparisonWeeks: 52,
+  whatIfScenario: "roommate",
+  whatIfContribution: null,
+  quizIndex: 0,
+  quizAutoAdvance: true,
+  resultView: "overview",
 };
 const DEMO = {
   ...EMPTY,
@@ -899,6 +942,7 @@ const DEMO = {
   htype: "solo",
   kids: "none",
   savings: "s10",
+  comparisonSalary: 50000,
 };
 const find = (list, id) => list.find((x) => x.id === id);
 const rented = (id) => ["studio", "1br", "2br", "house_r"].includes(id);
@@ -917,7 +961,7 @@ export function progressiveTax(income, brackets) {
 
 // Historical 2024 single-filer teaching model, before credits or benefit deductions.
 export function taxBreakdown(income) {
-  const gross = number(income);
+  const gross = number(income, 1000000000000);
   return {
     federal: progressiveTax(Math.max(0, gross - 14600), [
       [11600, 0.1],
@@ -948,7 +992,7 @@ export function taxBreakdown(income) {
 }
 export function takeHome(income) {
   return (
-    number(income) -
+    number(income, 1000000000000) -
     Object.values(taxBreakdown(income)).reduce((a, b) => a + b, 0)
   );
 }
@@ -957,6 +1001,7 @@ export function salaryNeeded(monthly) {
   if (target === 0) return 0;
   let lo = 0,
     hi = 10000000;
+  while (takeHome(hi) < target) hi *= 2;
   for (let i = 0; i < 70; i++) {
     const mid = (lo + hi) / 2;
     if (takeHome(mid) < target) lo = mid;
@@ -972,28 +1017,88 @@ export function loanPayment(principal, rate = 0.065, months = 120) {
     : (number(principal) * r) / (1 - Math.pow(1 + r, -months));
 }
 
+export function vehicleCosts(a) {
+  const t = find(TRANS, a.trans);
+  if (!t) return 0;
+  return (
+    t.cost +
+    (t.car
+      ? (a.ciOut ? 0 : CINS[t.ct].cost) +
+        (a.crOut ? 0 : 30) +
+        CGAS[t.ct] +
+        (t.ct === "beater" ? 125 : 75)
+      : 0)
+  );
+}
+function careCost(a) {
+  const base = find(CARE, a.care)?.cost || 0;
+  return (
+    base -
+    (a.care === "full" && a.leisure.includes("gym")
+      ? find(LEISURE, "gym").cost
+      : 0)
+  );
+}
+export function sharedHousingFactor(a) {
+  const custom =
+    a.budgetMode === "household" ? a.householdHomeShare : a.personalHomeShare;
+  if (custom !== null && custom !== undefined) return number(custom, 100) / 100;
+  if (a.budgetMode === "household") return 1;
+  return a.htype === "partner_work" || (a.roommate && rented(a.housing))
+    ? 0.5
+    : 1;
+}
+export function partnerCosts(a) {
+  const fallback = {
+    food: find(FOOD, a.food)?.cost || 0,
+    transport: vehicleCosts({ ...a, ciOut: false, crOut: false }),
+    health:
+      (a.hlOut ? 0 : find(HEALTH, a.health)?.cost || 0) +
+      a.hadd.reduce((s, id) => s + (find(HADD, id)?.cost || 0), 0) +
+      number(a.medicalReserve),
+    personal:
+      (a.utils.includes("mobile") ? find(UTILS, "mobile").cost : 0) +
+      (find(CLOTH, a.cloth)?.cost || 0) +
+      careCost(a) +
+      a.leisure.reduce((s, id) => s + (find(LEISURE, id)?.cost || 0), 0),
+  };
+  return Object.fromEntries(
+    Object.entries(fallback).map(([key, value]) => [
+      key,
+      a[`partner${key[0].toUpperCase() + key.slice(1)}`] === null ||
+      a[`partner${key[0].toUpperCase() + key.slice(1)}`] === undefined
+        ? value
+        : number(a[`partner${key[0].toUpperCase() + key.slice(1)}`], 100000),
+    ]),
+  );
+}
 export function budget(a) {
   const lines = [];
-  const add = (label, amount, group = "everyday") => {
-    if (amount > 0) lines.push({ label, amount, group });
+  const add = (label, amount, group = "everyday", zero = false) => {
+    if (amount > 0 || zero) lines.push({ label, amount, group });
   };
   const h = find(HOUSING, a.housing),
     t = find(TRANS, a.trans),
     fr = find(FIRE, a.fireRisk) || FIRE[0];
-  const split =
-    (rented(a.housing) && a.roommate) || a.htype === "partner_work" ? 2 : 1;
+  const household = a.budgetMode === "household",
+    factor = sharedHousingFactor(a);
+  const hasPartner = ["partner_work", "partner_home"].includes(a.htype);
   if (h) {
     add(
-      h.id === "family" ? "Contribution at home" : h.l,
-      h.id === "family" ? number(a.homeContribution) : h.cost / split,
+      h.id === "family"
+        ? "Contribution at home"
+        : `${h.l}${factor < 1 ? " (your share)" : ""}`,
+      h.id === "family" ? number(a.homeContribution) : h.cost * factor,
       "housing",
+      h.id === "family",
     );
     if (h.ins === "renters" && !a.rOut)
       add("Renter's insurance", fr.renters, "housing");
     if (h.ins === "homeowners") {
-      if (!a.hOut) add("Homeowner's insurance", fr.homeowners, "housing");
-      add("Property tax reserve (example)", 417 / split, "housing");
-      add("Home maintenance reserve (example)", 333 / split, "housing");
+      if (!a.hOut)
+        add("Homeowner's insurance", fr.homeowners * factor, "housing");
+      add("Property tax reserve (example)", 417 * factor, "housing");
+      add("Home maintenance reserve (example)", 333 * factor, "housing");
     }
   }
   for (const id of a.utils) {
@@ -1001,12 +1106,20 @@ export function budget(a) {
     if (u)
       add(
         u.l,
-        u.cost /
-          (["internet", "water_gas", "electric"].includes(id) ? split : 1),
+        u.cost *
+          (["internet", "water_gas", "electric"].includes(id) ? factor : 1),
       );
   }
   const food = find(FOOD, a.food);
-  if (food) add("Food", food.cost * (a.htype === "partner_home" ? 2 : 1));
+  if (food)
+    add(
+      food.id === "included"
+        ? "Food (covered or included elsewhere)"
+        : "Food (you)",
+      food.cost,
+      "everyday",
+      food.id === "included",
+    );
   if (t) {
     add(t.l, t.cost, "transport");
     if (t.car) {
@@ -1021,44 +1134,79 @@ export function budget(a) {
     }
   }
   if (!a.hlOut) {
-    const health = find(HEALTH, a.health);
-    if (health) add("Health premium (your coverage)", health.cost);
+    const hc = find(HEALTH, a.health);
+    if (hc) add("Health premium (your coverage)", hc.cost);
   }
   for (const id of a.hadd) {
     const item = find(HADD, id);
     if (item) add(item.l, item.cost);
   }
+  add("Medical out-of-pocket reserve", number(a.medicalReserve));
   for (const id of a.leisure) {
     const item = find(LEISURE, id);
     if (item) add(item.l, item.cost);
   }
-  for (const [list, key, label] of [
-    [CLOTH, "cloth", "Clothing"],
-    [CARE, "care", "Personal care"],
-  ]) {
-    const item = find(list, a[key]);
-    if (item) add(label, item.cost);
-  }
+  const clothing = find(CLOTH, a.cloth);
+  if (clothing) add("Clothing", clothing.cost);
+  const care = find(CARE, a.care);
+  if (care)
+    add(
+      a.care === "full" && a.leisure.includes("gym")
+        ? "Personal care (gym counted under leisure)"
+        : "Personal care",
+      careCost(a),
+    );
   for (const id of a.misc) {
     const item = find(MISC, id);
     if (item) add(item.l, item.cost);
   }
+  const includesPartner =
+    hasPartner && (household || a.htype === "partner_home");
+  if (includesPartner) {
+    const pc = partnerCosts(a);
+    add("Other adult: food", pc.food);
+    add("Other adult: transportation", pc.transport, "transport");
+    add("Other adult: healthcare", pc.health);
+    add("Other adult: personal costs", pc.personal);
+  }
   const kids = find(KIDS, a.kids);
-  if (kids) {
-    if (a.htype !== "partner_home") add("Childcare", kids.care);
-    add("Children: food & supplies", kids.supplies);
+  if (kids && kids.id !== "none") {
+    const share = household
+      ? 1
+      : a.childSharePercent === null || a.childSharePercent === undefined
+        ? a.htype === "partner_work"
+          ? 0.5
+          : 1
+        : number(a.childSharePercent, 100) / 100;
+    const childcare =
+      a.childcareBudget === null || a.childcareBudget === undefined
+        ? a.htype === "partner_home"
+          ? 0
+          : kids.care
+        : number(a.childcareBudget, 100000);
+    const supplies =
+      a.childSuppliesBudget === null || a.childSuppliesBudget === undefined
+        ? kids.supplies
+        : number(a.childSuppliesBudget, 100000);
+    add("Childcare (modeled share)", childcare * share);
+    add("Children: food & supplies (modeled share)", supplies * share);
   }
   if (["trade", "cc", "4year"].includes(a.plan))
     add("Student loan payment", loanPayment(a.loan));
-  const expenses = lines.reduce((sum, l) => sum + l.amount, 0);
-  const rate = find(SAVES, a.savings)?.pct || 0;
-  const required = expenses / (1 - rate);
+  const expenses = lines.reduce((s, l) => s + l.amount, 0),
+    rate = find(SAVES, a.savings)?.pct || 0,
+    required = expenses / (1 - rate);
   add(
-    `Savings (${Math.round(rate * 100)}% of take-home)`,
+    `General savings target (${Math.round(rate * 100)}% at required income)`,
     required - expenses,
     "savings",
   );
-  const sideNet = number(a.hustle) * 0.75; // scenario reserve, not a tax calculation
+  const sideNet =
+    number(a.hustle, 100000) * (a.hustleMode === "gross" ? 0.75 : 1);
+  const partnerGross =
+    household && a.htype === "partner_work" ? number(a.partnerSalary) : 0;
+  const partnerNet = takeHome(partnerGross) / 12,
+    otherNet = sideNet + partnerNet;
   return {
     lines,
     expenses,
@@ -1066,18 +1214,23 @@ export function budget(a) {
     savings: required - expenses,
     total: required,
     sideNet,
-    mainNet: Math.max(0, required - sideNet),
-    salary: salaryNeeded(Math.max(0, required - sideNet)),
-    groups: ["housing", "everyday", "transport", "savings"].map((group) =>
-      lines
-        .filter((l) => l.group === group)
-        .reduce((sum, l) => sum + l.amount, 0),
+    partnerNet,
+    partnerGross,
+    otherNet,
+    mainNet: Math.max(0, required - otherNet),
+    salary: salaryNeeded(Math.max(0, required - otherNet)),
+    groups: ["housing", "everyday", "transport", "savings"].map((g) =>
+      lines.filter((l) => l.group === g).reduce((s, l) => s + l.amount, 0),
     ),
-    split,
+    split: 1 / factor,
+    factor,
+    household,
+    includesPartner,
+    scopeLabel: household ? "Household plan" : "Your share",
   };
 }
 
-function matchCareers(answers) {
+export function matchCareers(answers, all = false) {
   const scores = { R: 0, I: 0, A: 0, S: 0, E: 0 };
   answers.forEach((code) => {
     if (code in scores) scores[code]++;
@@ -1087,8 +1240,9 @@ function matchCareers(answers) {
     index,
     score: c.types.reduce((s, t) => s + scores[t], 0),
   }))
+    .filter((career) => all || career.score > 0)
     .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, 6);
+    .slice(0, all ? CAREERS.length : 6);
 }
 function valid(step, a) {
   return [
@@ -1106,6 +1260,256 @@ function valid(step, a) {
     () => !!a.htype && !!a.kids,
     () => !!a.savings,
   ][step]();
+}
+
+const PLAN_ENUMS = {
+  grade: ["", "9th", "10th", "11th", "12th"],
+  plan: ["", "work", "trade", "cc", "4year", "military", "unsure"],
+  housing: [null, ...HOUSING.map((x) => x.id)],
+  fireRisk: FIRE.map((x) => x.id),
+  food: [null, ...FOOD.map((x) => x.id)],
+  trans: [null, ...TRANS.map((x) => x.id)],
+  health: [null, ...HEALTH.map((x) => x.id)],
+  cloth: [null, ...CLOTH.map((x) => x.id)],
+  care: [null, ...CARE.map((x) => x.id)],
+  htype: [null, ...HTYPE.map((x) => x.id)],
+  kids: [null, ...KIDS.map((x) => x.id)],
+  savings: [null, ...SAVES.map((x) => x.id)],
+  budgetMode: ["personal", "household"],
+  hustleMode: ["net", "gross"],
+  whatIfScenario: ["roommate", "family"],
+  resultView: [
+    "overview",
+    "budget",
+    "careers",
+    "paycheck",
+    "whatif",
+    "sources",
+  ],
+};
+const PLAN_ARRAYS = {
+  pers: ["R", "I", "A", "S", "E"],
+  utils: UTILS.map((x) => x.id),
+  hadd: HADD.map((x) => x.id),
+  leisure: LEISURE.map((x) => x.id),
+  misc: MISC.map((x) => x.id),
+};
+export function parseSavedPlan(text) {
+  if (typeof text !== "string" || text.length > 500000)
+    throw new Error(
+      "Choose a student-guide progress file smaller than 500 KB.",
+    );
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new Error(
+      "This file is not valid JSON. Choose a progress file downloaded from this guide.",
+    );
+  }
+  if (
+    !document ||
+    document.format !== "life-student-guide" ||
+    document.version !== 1 ||
+    !document.plan ||
+    typeof document.plan !== "object" ||
+    Array.isArray(document.plan)
+  )
+    throw new Error("This is not a supported student-guide progress file.");
+  const raw = document.plan,
+    plan = { ...EMPTY };
+  for (const key of Object.keys(EMPTY)) {
+    if (!Object.hasOwn(raw, key)) continue;
+    const value = raw[key];
+    if (PLAN_ENUMS[key]) {
+      if (!PLAN_ENUMS[key].includes(value))
+        throw new Error("The progress file contains an unknown choice.");
+      plan[key] = value;
+    } else if (PLAN_ARRAYS[key]) {
+      if (
+        !Array.isArray(value) ||
+        value.length > (key === "pers" ? 6 : PLAN_ARRAYS[key].length) ||
+        value.some((x) => !PLAN_ARRAYS[key].includes(x))
+      )
+        throw new Error("The progress file contains invalid selections.");
+      plan[key] = key === "pers" ? [...value] : [...new Set(value)];
+    } else if (typeof EMPTY[key] === "boolean") {
+      if (typeof value !== "boolean")
+        throw new Error("The progress file contains an invalid setting.");
+      plan[key] = value;
+    } else if (key === "name" || key === "comparisonCareer") {
+      if (
+        typeof value !== "string" ||
+        value.length > (key === "name" ? 32 : 100)
+      )
+        throw new Error("The progress file contains invalid text.");
+      plan[key] = value;
+    } else {
+      if (value === null && EMPTY[key] === null) {
+        plan[key] = null;
+        continue;
+      }
+      const max =
+        key === "quizIndex"
+          ? 5
+          : [
+                "childSharePercent",
+                "personalHomeShare",
+                "householdHomeShare",
+              ].includes(key)
+            ? 100
+            : key === "comparisonHours"
+              ? 80
+              : key === "comparisonWeeks"
+                ? 52
+                : ["comparisonSalary", "partnerSalary"].includes(key)
+                  ? 10000000
+                  : 100000;
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value > max ||
+        (["comparisonHours", "comparisonWeeks"].includes(key) && value < 1) ||
+        (key === "quizIndex" && !Number.isInteger(value))
+      )
+        throw new Error(
+          "A number in the progress file is outside the supported range.",
+        );
+      plan[key] = value;
+    }
+  }
+  const firstIncomplete = STEPS.findIndex((_, i) => !valid(i, plan));
+  const wantedStep =
+    Number.isInteger(document.step) && document.step >= 0 && document.step < 13
+      ? document.step
+      : 0;
+  return {
+    plan,
+    step:
+      firstIncomplete >= 0 ? Math.min(wantedStep, firstIncomplete) : wantedStep,
+    screen:
+      document.screen === "results" && firstIncomplete < 0
+        ? "results"
+        : "wizard",
+  };
+}
+export function serializePlan(plan, step = 0, screen = "wizard") {
+  const result = {
+    format: "life-student-guide",
+    version: 1,
+    savedAt: new Date().toISOString(),
+    plan: Object.fromEntries(
+      Object.keys(EMPTY).map((k) => [k, plan[k] ?? EMPTY[k]]),
+    ),
+    step,
+    screen,
+  };
+  const text = JSON.stringify(result, null, 2);
+  parseSavedPlan(text);
+  return text;
+}
+function ProgressControls({ onSave, onLoad }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {onSave && (
+        <Button
+          onClick={onSave}
+          title="Download a file with your name or nickname, choices and comparisons to reopen later."
+          style={{ fontSize: 12, padding: "8px 11px" }}
+        >
+          Save progress
+        </Button>
+      )}
+      {onLoad && (
+        <Button onClick={onLoad} style={{ fontSize: 12, padding: "8px 11px" }}>
+          Open progress
+        </Button>
+      )}
+    </div>
+  );
+}
+function AmountInput({
+  value,
+  onChange,
+  min = 0,
+  max = 100000,
+  step = "0.01",
+  allowBlank = false,
+  ...props
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value)),
+    [error, setError] = useState("");
+  const current = useRef(value),
+    input = useRef(null);
+  const errorId = useId();
+  useEffect(() => {
+    if (value !== current.current) {
+      current.current = value;
+      setDraft(value === null ? "" : String(value));
+      setError("");
+      input.current?.setCustomValidity("");
+    }
+  }, [value]);
+  return (
+    <>
+      <input
+        {...props}
+        ref={input}
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
+        onChange={(e) => {
+          const text = e.target.value;
+          setDraft(text);
+          const n = Number(text);
+          const message =
+            text !== "" && (!Number.isFinite(n) || n < min || n > max)
+              ? `Enter a number from ${min.toLocaleString()} to ${max.toLocaleString()}.`
+              : "";
+          e.target.setCustomValidity(message);
+          setError(message);
+          if (!message) {
+            const next =
+              text === "" ? (allowBlank ? null : Math.max(min, 0)) : n;
+            current.current = next;
+            onChange(next);
+          }
+        }}
+        onBlur={() => {
+          if (draft === "" && !allowBlank) {
+            setDraft(String(Math.max(min, 0)));
+            current.current = Math.max(min, 0);
+            onChange(Math.max(min, 0));
+          }
+        }}
+        style={inputStyle}
+      />
+      {error && (
+        <span
+          id={errorId}
+          role="alert"
+          style={{ display: "block", fontSize: 12, color: C.red, marginTop: 6 }}
+        >
+          {error}
+        </span>
+      )}
+    </>
+  );
+}
+function visibleFieldsValid() {
+  const invalid = [...document.querySelectorAll("input")].find(
+    (input) => input.offsetParent !== null && !input.checkValidity(),
+  );
+  if (invalid) {
+    invalid.reportValidity();
+    return false;
+  }
+  return true;
 }
 
 function useSmall() {
@@ -1282,7 +1686,7 @@ function Choice({ selected, onClick, title, note, cost, multiple = false }) {
     </button>
   );
 }
-function Header({ small, children }) {
+function Header({ small, children, onSave, onLoad }) {
   return (
     <header
       style={{
@@ -1347,12 +1751,14 @@ function Header({ small, children }) {
             boxSizing: "border-box",
             display: "flex",
             alignItems: "center",
-            gap: 20,
+            gap: small ? 12 : 20,
+            flexWrap: "wrap",
             fontSize: 12,
             color: C.muted,
           }}
         >
           {!small && <span>Riverside County, California</span>}
+          <ProgressControls onSave={onSave} onLoad={onLoad} />
           {children}
         </div>
       </div>
@@ -1369,7 +1775,15 @@ function Modal({
 }) {
   const ref = useRef(null);
   useEffect(() => {
-    ref.current?.showModal();
+    const dialog = ref.current;
+    const opener = document.activeElement;
+    dialog?.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+      requestAnimationFrame(() => {
+        if (opener?.isConnected) opener.focus();
+      });
+    };
   }, []);
   return (
     <dialog
@@ -1480,6 +1894,7 @@ function AboutStep({ a, update }) {
           style={inputStyle}
         />
       </Field>
+      <BudgetScope a={a} update={update} />
       <Field label="Your grade">
         <select
           value={a.grade}
@@ -1544,23 +1959,27 @@ function AboutStep({ a, update }) {
   );
 }
 function InterestStep({ a, update }) {
-  const [q, setQ] = useState(0),
-    [locked, setLocked] = useState(false);
+  const q = a.quizIndex || 0;
+  const setQ = (value) =>
+    update({ quizIndex: typeof value === "function" ? value(q) : value });
+  const [locked, setLocked] = useState(false);
   const timer = useRef(null),
     heading = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    heading.current?.focus();
+  }, [q]);
   const pick = (type) => {
     if (locked) return;
     const pers = [...a.pers];
     pers[q] = type;
     update({ pers });
-    if (q < 5) {
+    if (q < 5 && a.quizAutoAdvance !== false) {
       setLocked(true);
       timer.current = setTimeout(() => {
         setQ((v) => Math.min(5, v + 1));
         setLocked(false);
-        heading.current?.focus();
-      }, 180);
+      }, 350);
     }
   };
   return (
@@ -1589,6 +2008,18 @@ function InterestStep({ a, update }) {
       >
         {PQ[q].q}
       </h2>
+      <label style={{ display: "block", fontSize: 13, marginBottom: 20 }}>
+        <input
+          type="checkbox"
+          checked={a.quizAutoAdvance}
+          onChange={(e) => {
+            clearTimeout(timer.current);
+            setLocked(false);
+            update({ quizAutoAdvance: e.target.checked });
+          }}
+        />{" "}
+        Automatically move to the next question
+      </label>
       <div aria-busy={locked}>
         {PQ[q].o.map((o, i) => (
           <Choice
@@ -1720,26 +2151,38 @@ function HousingStep({ a, update, ask }) {
           label="Your monthly contribution at home"
           help="Living with family is not always free. Add a contribution here; choose food and utilities in later steps if you also pay those."
         >
-          <input
-            type="number"
-            min="0"
-            max="100000"
+          <AmountInput
             value={a.homeContribution}
-            onChange={(e) =>
-              update({ homeContribution: number(e.target.value, 100000) })
-            }
-            style={inputStyle}
+            onChange={(homeContribution) => update({ homeContribution })}
           />
         </Field>
       )}
       {rented(a.housing) && (
         <Choice
           title="Share with one roommate"
-          note="Split rent and shared utilities in half. Your food, insurance, phone, and personal costs stay yours."
+          note="A roommate can share rent and utilities. Check the assigned share below; your other personal costs stay yours."
           selected={a.roommate}
           onClick={() => update({ roommate: !a.roommate })}
           multiple
         />
+      )}
+      {a.housing && a.housing !== "family" && (
+        <Field
+          label="Housing and shared utilities assigned to this plan (%)"
+          help="The preset housing price is for the whole home. Adjust your assigned share if someone else pays part. Personal mode defaults to half with one roommate or a working partner; household mode defaults to the whole bill."
+        >
+          <AmountInput
+            max={100}
+            value={sharedHousingFactor(a) * 100}
+            onChange={(v) =>
+              update({
+                [a.budgetMode === "household"
+                  ? "householdHomeShare"
+                  : "personalHomeShare"]: v,
+              })
+            }
+          />
+        </Field>
       )}
       {h?.ins && (
         <>
@@ -1912,50 +2355,176 @@ function HealthStep({ a, update, toggle, ask }) {
         multiple
         onChange={(id) => toggle("hadd", id)}
       />
-      <Note style={{ boxSizing: "border-box", marginTop: 20 }}>
-        This selection covers you only. Medi-Cal and Covered California
-        assistance depend on actual eligibility. This tool does not check
-        eligibility or add a partner's premium, deductibles, copays, or a
-        medical spending reserve. Add those when building a real household
-        budget.
+      <Field
+        label="Medical out-of-pocket reserve per month"
+        help="Set aside money for copays, prescriptions, deductibles or dependent coverage not included above. This is separate from the premium."
+      >
+        <AmountInput
+          value={a.medicalReserve}
+          onChange={(medicalReserve) => update({ medicalReserve })}
+        />
+      </Field>
+      <Note>
+        This step starts with your coverage. Eligibility for Medi-Cal and
+        Covered California assistance depends on your actual situation.
+        Household mode adds an editable healthcare amount for the other adult
+        later.
       </Note>
     </>
   );
 }
+function BudgetScope({ a, update }) {
+  return (
+    <Field
+      label="What are you planning for?"
+      help="Picture life after your education or training, using today's local planning prices."
+    >
+      <select
+        style={inputStyle}
+        value={a.budgetMode}
+        onChange={(e) => update({ budgetMode: e.target.value })}
+      >
+        <option value="personal">My share of the bills</option>
+        <option value="household">Our household total</option>
+      </select>
+    </Field>
+  );
+}
 function HouseholdStep({ a, update }) {
-  const kids = find(KIDS, a.kids);
+  const kids = find(KIDS, a.kids),
+    b = budget(a),
+    pc = partnerCosts(a);
+  const partner = ["partner_work", "partner_home"].includes(a.htype);
   return (
     <>
+      <BudgetScope a={a} update={update} />
       <ChoiceList
         items={HTYPE}
         value={a.htype}
         onChange={(htype) => update({ htype })}
       />
-      <div
-        style={{ boxSizing: "border-box", ...eyebrow, margin: "28px 0 14px" }}
-      >
+      {a.housing !== "family" && partner && (
+        <Field
+          label="Housing and shared utilities assigned to this plan (%)"
+          help={
+            b.household
+              ? "100% includes the whole home's bills. Lower this if someone outside your household pays part."
+              : "A working partner defaults to half; a partner without earnings defaults to all. Adjust to your agreement. This share also applies to home ownership reserves."
+          }
+        >
+          <AmountInput
+            value={b.factor * 100}
+            max={100}
+            onChange={(v) =>
+              update({
+                [b.household ? "householdHomeShare" : "personalHomeShare"]: v,
+              })
+            }
+          />
+        </Field>
+      )}
+      {b.household && a.htype === "partner_work" && (
+        <Field
+          label="Other adult's annual gross wages"
+          help="Enter 0 until you have a wage to test. Each adult's take-home is estimated separately with the historical 2024 single-filer model; this does not model a joint tax return."
+        >
+          <AmountInput
+            value={a.partnerSalary}
+            max={10000000}
+            onChange={(partnerSalary) => update({ partnerSalary })}
+          />
+        </Field>
+      )}
+      {b.includesPartner && (
+        <section style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 20 }}>Include the other adult's expenses</h2>
+          <p style={{ fontSize: 13, color: C.muted }}>
+            Starting amounts mirror your choices for one adult. Edit them for
+            your situation, including 0 for a cost already covered. Housing and
+            shared utilities are counted separately. Other adult medical costs
+            should include their coverage and dependents if needed.
+          </p>
+          {[
+            ["food", "Food"],
+            ["transport", "Transportation"],
+            ["health", "Healthcare"],
+            ["personal", "Phone, clothing, care and leisure"],
+          ].map(([key, label]) => (
+            <Field key={key} label={`Other adult: ${label} per month`}>
+              <AmountInput
+                value={pc[key]}
+                onChange={(v) =>
+                  update({
+                    [`partner${key[0].toUpperCase() + key.slice(1)}`]: v,
+                  })
+                }
+              />
+            </Field>
+          ))}
+        </section>
+      )}
+      <div style={{ ...eyebrow, margin: "28px 0 14px" }}>
         Children you support
       </div>
       <ChoiceList
         items={KIDS}
         value={a.kids}
-        onChange={(kids) => update({ kids })}
-        price={(k) =>
-          `+${fmt((a.htype === "partner_home" ? 0 : k.care) + k.supplies)}/mo`
+        onChange={(kids) =>
+          update({ kids, childcareBudget: null, childSuppliesBudget: null })
         }
       />
-      {kids?.care > 0 && a.htype === "partner_home" && (
-        <Note tone="green">
-          This scenario assumes your partner provides childcare without paid
-          daycare. It also adds food for a second adult. Unpaid caregiving has
-          value; zero daycare does not mean zero cost or effort.
-        </Note>
+      {kids && kids.id !== "none" && (
+        <>
+          <Field
+            label="Children's total childcare per month"
+            help="Edit the local preset for the children's ages and care schedule. Use 0 if there is no paid care."
+          >
+            <AmountInput
+              value={
+                a.childcareBudget ??
+                (a.htype === "partner_home" ? 0 : kids.care)
+              }
+              onChange={(childcareBudget) => update({ childcareBudget })}
+            />
+          </Field>
+          <Field label="Children's total food and supplies per month">
+            <AmountInput
+              value={a.childSuppliesBudget ?? kids.supplies}
+              onChange={(childSuppliesBudget) =>
+                update({ childSuppliesBudget })
+              }
+            />
+          </Field>
+          {!b.household && (
+            <Field
+              label="Your share of children's costs (%)"
+              help="This divides the two totals above. Enter the share you expect to pay."
+            >
+              <AmountInput
+                value={
+                  a.childSharePercent ?? (a.htype === "partner_work" ? 50 : 100)
+                }
+                max={100}
+                onChange={(childSharePercent) => update({ childSharePercent })}
+              />
+            </Field>
+          )}
+          <Note>
+            {b.household
+              ? "This household plan includes 100% of the children's costs entered above."
+              : "The budget includes only the share of child costs assigned to you."}{" "}
+            Children's health coverage is not added automatically. Include their
+            premium and medical costs in your healthcare reserve or the other
+            adult's healthcare amount.
+          </Note>
+        </>
       )}
-      <Note style={{ boxSizing: "border-box", marginTop: 20 }}>
-        A working partner shares housing and shared utilities only; their income
-        is not added to yours. Child costs are the amounts assigned to your
-        plan. We still model your wage taxes as a single filer, so actual family
-        tax benefits and filing status can change take-home pay.
+      <Note style={{ marginTop: 20 }}>
+        {b.household
+          ? "Household mode includes both adults' listed costs and any partner wage entered. Your required wage covers the remainder."
+          : "Personal mode includes your share of the bills. A working partner covers their own personal costs; their income is not added to yours. If your partner has no earnings, their listed expenses are assigned to you."}{" "}
+        Unpaid caregiving has value. A zero childcare bill does not mean zero
+        work.
       </Note>
     </>
   );
@@ -1972,23 +2541,35 @@ function SavingsStep({ a, update }) {
       />
       <hr style={divider} />
       <Field
-        label="Optional side income, before expenses and taxes, per month"
-        help="A simple scenario reserves 25% for tax and business costs. It is not a self-employment tax calculation, and actual costs may be higher. Enter 0 to leave it out."
+        label="Optional side income per month"
+        help="Use money available after business expenses and taxes when you know it. Enter 0 to leave it out."
       >
-        <input
-          type="number"
-          min="0"
-          max="100000"
-          step="50"
+        <AmountInput
           value={a.hustle}
-          onChange={(e) => update({ hustle: number(e.target.value, 100000) })}
-          style={inputStyle}
+          onChange={(hustle) => update({ hustle })}
         />
       </Field>
-      <Note>
-        There is no perfect savings rate for everyone. Here, a 10% target means
-        expenses use 90% of the take-home pay needed, and the remaining 10% goes
-        to savings.
+      <Field label="How should we treat this side income?">
+        <select
+          style={inputStyle}
+          value={a.hustleMode}
+          onChange={(e) => update({ hustleMode: e.target.value })}
+        >
+          <option value="net">Already after expenses and taxes</option>
+          <option value="gross">Before expenses and taxes: reserve 25%</option>
+        </select>
+      </Field>
+      {a.hustleMode === "gross" && (
+        <Note>
+          A 25% reserve is only a classroom shortcut. Actual business costs and
+          self-employment taxes vary and can be higher.
+        </Note>
+      )}
+      <Note style={{ marginTop: 16 }}>
+        General savings is separate from selected car, home and medical
+        reserves. A 10% goal means 10% of the take-home income required for this
+        plan. Its dollar target stays fixed when you test a lower or higher
+        paycheck.
       </Note>
     </>
   );
@@ -2057,7 +2638,18 @@ function StepContent({ step, a, update, toggle, ask }) {
       return null;
   }
 }
-function Wizard({ a, update, step, setStep, onFinish, onHome, small }) {
+function Wizard({
+  a,
+  update,
+  step,
+  setStep,
+  onFinish,
+  onHome,
+  small,
+  onSave,
+  onLoad,
+  editing,
+}) {
   const [removal, setRemoval] = useState(null);
   const heading = useRef(null),
     b = budget(a);
@@ -2069,13 +2661,14 @@ function Wizard({ a, update, step, setStep, onFinish, onHome, small }) {
     });
   const ask = (key) => (a[key] ? update({ [key]: false }) : setRemoval(key));
   const go = (n) => {
+    if (n > step && !visibleFieldsValid()) return;
     setStep(n);
     window.scrollTo(0, 0);
     requestAnimationFrame(() => heading.current?.focus());
   };
   return (
     <>
-      <Header small={small}>
+      <Header small={small} onSave={onSave} onLoad={onLoad}>
         <button
           type="button"
           onClick={onHome}
@@ -2114,11 +2707,44 @@ function Wizard({ a, update, step, setStep, onFinish, onHome, small }) {
             Your life, your choices
           </span>
           <span
-            style={{ boxSizing: "border-box", fontSize: 12, color: C.muted }}
+            style={{
+              boxSizing: "border-box",
+              fontSize: 12,
+              color: C.muted,
+              whiteSpace: "nowrap",
+            }}
           >
             Step {step + 1} of 13
           </span>
         </div>
+        <Field label="Jump to a section">
+          <select
+            value={step}
+            style={inputStyle}
+            onChange={(e) => go(Number(e.target.value))}
+          >
+            {STEPS.map(([title], i) => (
+              <option
+                key={title}
+                value={i}
+                disabled={
+                  i > step && !STEPS.slice(0, i).every((_, j) => valid(j, a))
+                }
+              >
+                {String(i + 1).padStart(2, "0")} {title}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {editing && STEPS.every((_, i) => valid(i, a)) && (
+          <Button
+            primary
+            onClick={() => visibleFieldsValid() && onFinish()}
+            style={{ marginBottom: 22 }}
+          >
+            Done editing, see results
+          </Button>
+        )}
         <progress
           aria-label="Steps completed"
           max={13}
@@ -2199,7 +2825,10 @@ function Wizard({ a, update, step, setStep, onFinish, onHome, small }) {
               <Button
                 primary
                 disabled={!valid(step, a)}
-                onClick={() => (step === 12 ? onFinish() : go(step + 1))}
+                onClick={() =>
+                  visibleFieldsValid() &&
+                  (step === 12 ? onFinish() : go(step + 1))
+                }
                 style={{ boxSizing: "border-box", flex: 1 }}
               >
                 {step === 12 ? "See my results" : "Continue"}
@@ -2336,8 +2965,9 @@ function Wizard({ a, update, step, setStep, onFinish, onHome, small }) {
             marginTop: 40,
           }}
         >
-          Classroom planning estimates. Refreshing or closing this tab clears
-          your answers. No answers are uploaded or saved.
+          Local classroom planning estimates. Save a progress file before
+          refreshing or closing this tab. The file keeps your choices on your
+          device; nothing is uploaded.
         </p>
       </main>
       {removal && (
@@ -2445,354 +3075,281 @@ function Overview({
   onPrint,
   salary,
   setSalary,
+  onEdit,
 }) {
-  const available = takeHome(salary) / 12 + b.sideNet,
-    gap = b.total - available;
+  const available = salary === null ? null : takeHome(salary) / 12 + b.otherNet;
+  const gap = available === null ? null : b.total - available;
+  const biggest = GROUPS.map((g, i) => ({ ...g, amount: b.groups[i] }))
+    .filter((g) => g.name !== "Savings")
+    .sort((x, y) => y.amount - x.amount)[0];
   return (
     <>
-      <div style={{ boxSizing: "border-box", ...eyebrow, marginBottom: 15 }}>
-        Your next chapter
-      </div>
+      <div style={{ ...eyebrow, marginBottom: 15 }}>Your next chapter</div>
       <h1
         style={{
-          boxSizing: "border-box",
           fontSize: small ? 38 : 64,
           lineHeight: 1.07,
           letterSpacing: small ? -1.8 : -2.8,
-          fontWeight: 780,
           margin: "0 0 17px",
+          fontWeight: 780,
         }}
       >
         Your lifestyle, at a glance.
       </h1>
       <p
         style={{
-          boxSizing: "border-box",
           color: C.muted,
-          fontSize: small ? 15 : 17,
-          lineHeight: 1.7,
+          fontSize: 16,
+          lineHeight: 1.8,
           margin: "0 0 30px",
-          maxWidth: 920,
         }}
       >
-        {a.name}, these are choices you can explore. Your budget is a starting
-        point for what comes next.
+        {a.name}, these are choices you can explore. This is{" "}
+        {b.household ? "your household's plan" : "your share of the bills"},
+        using local classroom estimates.
       </p>
       <div
         style={{
-          boxSizing: "border-box",
           display: "grid",
-          gridTemplateColumns: small ? "1fr" : "1.47fr 1fr",
+          gridTemplateColumns: small
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1.35fr) minmax(0, 1fr)",
           gap: small ? 28 : 46,
-          alignItems: "start",
         }}
       >
-        <section aria-label="Your monthly plan">
-          <h2
-            style={{
-              boxSizing: "border-box",
-              fontSize: 24,
-              fontWeight: 750,
-              letterSpacing: -0.6,
-              margin: "0 0 6px",
-            }}
-          >
-            Your monthly plan
+        <section aria-label="Your monthly plan" style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: 23, margin: "0 0 8px" }}>
+            {b.household ? "Household monthly plan" : "Your monthly plan"}
           </h2>
           <div
             style={{
-              boxSizing: "border-box",
               display: "flex",
-              alignItems: "baseline",
-              gap: 15,
               flexWrap: "wrap",
+              gap: 12,
+              alignItems: "baseline",
             }}
           >
             <strong
               style={{
-                boxSizing: "border-box",
-                fontSize: small ? 65 : 104,
-                lineHeight: 1.15,
-                letterSpacing: -4.5,
+                fontSize: small ? 64 : 94,
+                letterSpacing: -4,
                 color: C.blue,
-                fontWeight: 780,
+                lineHeight: 1.15,
               }}
             >
               {fmt(b.total)}
             </strong>
-            <span
-              style={{
-                boxSizing: "border-box",
-                fontSize: small ? 15 : 19,
-                color: C.muted,
-              }}
-            >
-              per month
-            </span>
+            <span style={{ color: C.muted }}>per month</span>
           </div>
-          <Spending b={b} small={small} />
+          {!small && <Spending b={b} small={false} />}
         </section>
         <section
+          aria-label="Required wages"
           style={{
-            boxSizing: "border-box",
             background: C.lightBlue,
-            borderRadius: 9,
             padding: small ? 24 : 30,
+            borderRadius: 9,
+            minWidth: 0,
           }}
         >
-          <h2
-            style={{
-              boxSizing: "border-box",
-              fontSize: 24,
-              letterSpacing: -0.7,
-              fontWeight: 750,
-              margin: "0 0 18px",
-            }}
-          >
-            A starting-pay reality check
+          <h2 style={{ fontSize: 23, margin: "0 0 12px" }}>
+            Your annual wages needed
           </h2>
-          <div
-            style={{ boxSizing: "border-box", fontSize: 18, color: C.muted }}
-          >
-            Example take-home{b.sideNet > 0 ? " + side income" : ""}
-          </div>
-          <div
+          <strong
             style={{
-              boxSizing: "border-box",
-              display: "flex",
-              alignItems: "baseline",
-              gap: 12,
-              flexWrap: "wrap",
-              marginTop: 5,
+              fontSize: small ? 48 : 60,
+              letterSpacing: -2.5,
+              lineHeight: 1.2,
+              color: C.blue,
             }}
           >
-            <strong
-              style={{
-                boxSizing: "border-box",
-                fontSize: small ? 53 : 66,
-                fontWeight: 780,
-                letterSpacing: -2.5,
-                lineHeight: 1.15,
-              }}
-            >
-              {fmt(available)}
-            </strong>
-            <span
-              style={{ boxSizing: "border-box", fontSize: 15, color: C.muted }}
-            >
-              / month
+            {fmt(b.salary)}
+          </strong>
+          <p style={{ margin: "10px 0 18px", fontSize: 17 }}>
+            {hourly(b.salary / 2080)}/hour{" "}
+            <span style={{ fontSize: 12, color: C.muted }}>
+              before taxes, at 40 paid hours × 52 weeks
             </span>
-          </div>
-          <div
-            style={{
-              boxSizing: "border-box",
-              borderTop: "1px solid #d6e3f6",
-              marginTop: 22,
-              paddingTop: 20,
-              marginBottom: 17,
-            }}
-          >
-            <div
-              style={{
-                boxSizing: "border-box",
-                display: "flex",
-                alignItems: "baseline",
-                gap: 12,
-                flexWrap: "wrap",
-                color: gap > 0 ? C.amber : C.green,
-              }}
-            >
-              <strong
-                style={{
-                  boxSizing: "border-box",
-                  fontSize: small ? 44 : 64,
-                  fontWeight: 750,
-                  letterSpacing: -2,
-                }}
-              >
-                {fmt(Math.abs(gap))}
-              </strong>
-              <span
-                style={{
-                  boxSizing: "border-box",
-                  fontSize: 17,
-                  fontWeight: 550,
-                }}
-              >
-                {gap > 0 ? "monthly gap" : "left after your plan"}
-              </span>
-            </div>
-            <p
-              style={{
-                boxSizing: "border-box",
-                fontSize: 13,
-                color: C.muted,
-                lineHeight: 1.7,
-                margin: "10px 0 0",
-              }}
-            >
-              {gap > 0
-                ? "Try one change and see what moves."
-                : "Room to build a cushion or adjust your goals."}
-            </p>
-          </div>
+          </p>
+          <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.8 }}>
+            This is the main wage needed to cover the plan and its general
+            savings target with the historical 2024 tax estimate.
+            {b.otherNet > 0
+              ? ` It also assumes ${fmt(b.otherNet)}/month from ${b.partnerNet > 0 && b.sideNet > 0 ? "the other adult and side income" : b.partnerNet > 0 ? "the other adult's estimated take-home" : "net side income"}.`
+              : ""}
+          </p>
+          {b.household && a.htype === "partner_work" && !a.partnerSalary && (
+            <Note tone="amber">
+              No other adult wage has been entered. The required wage currently
+              covers the household alone.
+            </Note>
+          )}
           <Button
             primary
             onClick={() => onView("careers")}
-            style={{ boxSizing: "border-box", width: "100%", fontSize: 15 }}
+            style={{ width: "100%", marginTop: 12 }}
           >
             Explore career paths
           </Button>
-          <div
-            style={{
-              boxSizing: "border-box",
-              fontSize: 11,
-              color: C.muted,
-              marginTop: 13,
-              lineHeight: 1.7,
-            }}
-          >
-            Based on an example {fmt(salary)}/year wage.{" "}
-            <button
-              onClick={() => onView("paycheck")}
-              style={{
-                boxSizing: "border-box",
-                padding: 0,
-                border: 0,
-                background: "none",
-                color: C.blue,
-                fontFamily: "inherit",
-                fontSize: 11,
-                cursor: "pointer",
-                textDecoration: "underline",
-              }}
-            >
-              Change the salary
-            </button>
-          </div>
         </section>
       </div>
-      <div
+      {small && (
+        <div style={{ marginTop: 24 }}>
+          <Spending b={b} small />
+        </div>
+      )}
+      <section
         style={{
-          boxSizing: "border-box",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 20,
-          flexWrap: "wrap",
           borderTop: `1px solid ${C.line}`,
-          borderBottom: `1px solid ${C.line}`,
-          padding: "26px 0",
-          marginTop: 32,
+          marginTop: 30,
+          paddingTop: 25,
         }}
       >
-        <div style={{ boxSizing: "border-box", flex: "1 1 330px" }}>
-          <h2
-            style={{
-              boxSizing: "border-box",
-              fontSize: 20,
-              letterSpacing: -0.5,
-              margin: "0 0 7px",
-            }}
-          >
-            A small change. A different possibility.
-          </h2>
-          <p
-            style={{
-              boxSizing: "border-box",
-              fontSize: 13,
-              color: C.muted,
-              lineHeight: 1.7,
-              margin: 0,
-            }}
-          >
-            Try a different choice to see how your monthly plan could look.
-          </p>
-        </div>
+        <h2 style={{ fontSize: 23, margin: "0 0 16px" }}>
+          Test a paycheck against your plan
+        </h2>
         <div
           style={{
-            boxSizing: "border-box",
-            display: "flex",
-            gap: 10,
-            flexWrap: "wrap",
+            display: "grid",
+            gridTemplateColumns: small
+              ? "minmax(0, 1fr)"
+              : "minmax(0, 1fr) minmax(0, 1fr)",
+            gap: 28,
           }}
         >
+          <div>
+            <Field
+              label="Annual wage to compare"
+              help={
+                a.comparisonCareer
+                  ? `Selected scenario: ${a.comparisonCareer}.`
+                  : "Choose a career scenario or enter a wage you want to test. The required wage above is a target, not a job offer."
+              }
+            >
+              <AmountInput
+                value={salary}
+                allowBlank
+                max={10000000}
+                placeholder="Enter a yearly wage"
+                onChange={setSalary}
+              />
+            </Field>
+            <Button onClick={() => onView("paycheck")}>
+              Explore the paycheck and hourly pay
+            </Button>
+          </div>
+          <div
+            aria-live="polite"
+            style={{
+              padding: 24,
+              background: C.soft,
+              borderRadius: 9,
+              minWidth: 0,
+            }}
+          >
+            {salary === null ? (
+              <p style={{ margin: 0, color: C.muted, lineHeight: 1.8 }}>
+                A wage has not been selected yet. Try an hourly offer or explore
+                career paths to start the comparison.
+              </p>
+            ) : (
+              <>
+                <div style={{ color: C.muted, fontSize: 13 }}>
+                  Available take-home
+                  {b.otherNet > 0 ? " plus other income" : ""}: {fmt(available)}
+                  /month
+                </div>
+                <strong
+                  style={{
+                    display: "block",
+                    fontSize: 43,
+                    color: gap > 0 ? C.amber : C.green,
+                    letterSpacing: -1.8,
+                    marginTop: 10,
+                  }}
+                >
+                  {fmt(Math.abs(gap))}
+                </strong>
+                <span>{gap > 0 ? "monthly gap" : "left after your plan"}</span>
+                <p style={{ fontSize: 12, color: C.muted, marginBottom: 0 }}>
+                  At {fmt(salary)}/year before taxes. The plan includes{" "}
+                  {fmt(b.savings)}/month in general savings; that target does
+                  not change with this test wage.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+      <RiskFlags a={a} compact />
+      {a.health === "medi_cal" && !a.hlOut && (
+        <Note tone="amber" style={{ marginTop: 20 }}>
+          You selected Medi-Cal. Higher earnings could change eligibility or
+          assistance. This plan keeps your selection until you change it.
+        </Note>
+      )}
+      <section
+        style={{
+          borderTop: `1px solid ${C.line}`,
+          marginTop: 28,
+          paddingTop: 24,
+        }}
+      >
+        <h2 style={{ fontSize: 20 }}>Make one change, then compare</h2>
+        <p style={{ color: C.muted, fontSize: 13 }}>
+          {biggest?.name} is your largest spending category at{" "}
+          {fmt(biggest?.amount || 0)}/month. Which choices are priorities, and
+          which could you change?
+        </p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {[
+            [2, "Edit housing"],
+            [5, "Edit transportation"],
+            [11, "Edit household"],
+            [12, "Edit savings"],
+          ].map(([step, title]) => (
+            <Button key={step} onClick={() => onEdit(step)}>
+              {title}
+            </Button>
+          ))}
           <Button onClick={() => onScenario("roommate")}>Try a roommate</Button>
           <Button onClick={() => onScenario("family")}>
             Compare living with family
           </Button>
         </div>
-      </div>
-      <div
+      </section>
+      <section
         style={{
-          boxSizing: "border-box",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 24,
-          flexWrap: "wrap",
-          padding: "25px 0 0",
+          marginTop: 28,
+          paddingTop: 24,
+          borderTop: `1px solid ${C.line}`,
         }}
       >
-        <div>
-          <h2
-            style={{
-              boxSizing: "border-box",
-              fontSize: 20,
-              letterSpacing: -0.5,
-              margin: "0 0 6px",
-            }}
-          >
-            What would you change first, and why?
-          </h2>
-          <p
-            style={{
-              boxSizing: "border-box",
-              fontSize: 13,
-              color: C.muted,
-              lineHeight: 1.7,
-              margin: 0,
-            }}
-          >
-            Think about your priorities, your options, and what matters most to
-            you.
-          </p>
-        </div>
-        <Button
-          onClick={onPrint}
-          style={{
-            boxSizing: "border-box",
-            border: 0,
-            padding: "8px 0",
-            fontWeight: 500,
-          }}
-        >
-          Print my summary
-        </Button>
-      </div>
+        <h2 style={{ fontSize: 20 }}>What would you change first, and why?</h2>
+        <p style={{ color: C.muted, fontSize: 13 }}>
+          Compare the lifestyle you want with the wages you are considering.
+          What surprised you? What training, hours or choices would make your
+          plan possible?
+        </p>
+        <Button onClick={onPrint}>Print my summary</Button>
+      </section>
       <p
-        style={{
-          boxSizing: "border-box",
-          fontSize: 11,
-          color: C.muted,
-          lineHeight: 1.8,
-          margin: "22px 0 0",
-        }}
+        style={{ color: C.muted, fontSize: 12, lineHeight: 1.8, marginTop: 24 }}
       >
-        Classroom estimates, not quotes or guarantees. Single-filer 2024 tax
-        model, before credits.{" "}
+        Perris / Inland Empire classroom planning estimates. Actual prices,
+        wages and situations vary. Taxes use a historical 2024 single-filer
+        model before credits and benefits.{" "}
         <button
           onClick={() => onView("sources")}
           style={{
-            boxSizing: "border-box",
             border: 0,
-            padding: 0,
             background: "none",
-            fontFamily: "inherit",
-            fontSize: 11,
             color: C.blue,
+            fontFamily: "inherit",
+            fontSize: "inherit",
             textDecoration: "underline",
             cursor: "pointer",
+            padding: 0,
           }}
         >
           See assumptions and sources
@@ -2834,7 +3391,7 @@ function PageTitle({ eyebrowText, title, body }) {
     </div>
   );
 }
-function RiskFlags({ a }) {
+function RiskFlags({ a, compact = false }) {
   const h = find(HOUSING, a.housing),
     t = find(TRANS, a.trans);
   const active = [
@@ -2846,7 +3403,9 @@ function RiskFlags({ a }) {
   ].filter(Boolean);
   if (!active.length) return null;
   return (
-    <section style={{ boxSizing: "border-box", marginBottom: 28 }}>
+    <section
+      style={{ boxSizing: "border-box", marginBottom: 28, marginTop: 24 }}
+    >
       <h2 style={{ boxSizing: "border-box", fontSize: 19 }}>
         Costs you left out
       </h2>
@@ -2876,7 +3435,9 @@ function RiskFlags({ a }) {
             }
             :{" "}
           </strong>
-          {CONSEQUENCES[key][1]}
+          {compact
+            ? "Excluded from the total. Review the costs and consequences in Your budget."
+            : CONSEQUENCES[key][1]}
         </p>
       ))}
     </section>
@@ -2991,7 +3552,7 @@ function BudgetPage({ a, b, small }) {
                 lineHeight: 1.8,
               }}
             >
-              About {fmt(b.salary / 2080)}/hour at 40 paid hours per week, 52
+              About {hourly(b.salary / 2080)}/hour at 40 paid hours per week, 52
               weeks a year. Not every job offers those hours.
             </p>
             <div
@@ -3032,20 +3593,55 @@ function BudgetPage({ a, b, small }) {
   );
 }
 function CareersPage({ a, b, small, onSalary }) {
-  const careers = matchCareers(a.pers);
+  const [browseAll, setBrowseAll] = useState(false);
+  const careers = matchCareers(a.pers, browseAll);
   return (
     <>
       <PageTitle
         eyebrowText="Possibilities, not predictions"
         title="Find a direction worth exploring."
-        body="These six paths connect with your interests. The pay figures are classroom scenarios to test, not verified local starting wages, guaranteed earnings, or predictions about your ability."
+        body="Explore paths connected with your interests, or browse every path. Pay figures are scenarios for comparison; actual job offers, training requirements and earnings vary."
       />
       <Note style={{ boxSizing: "border-box", marginBottom: 28 }}>
         Your plan needs about {fmt(b.salary)} in annual wages
-        {b.sideNet > 0 ? ", alongside your assumed side income" : ""}. Starting
-        pay, experienced pay, and self-employed business revenue are different
-        things. Test a real job posting's wage when you have one.
+        {b.otherNet > 0 ? ", alongside the other income in your plan" : ""}.
+        Starting pay, experienced pay, and self-employed business revenue are
+        different things. Test a real job posting's wage when you have one.
       </Note>
+      <p style={{ fontSize: 13, color: C.muted }}>
+        Connections reflect hands-on, investigative, creative, helping and
+        enterprising interests. Several paths can tie; their order is not a
+        ranking of your potential. Paths with no matching answers are available
+        in Browse all.
+      </p>
+      <Button
+        onClick={() => setBrowseAll((v) => !v)}
+        style={{ marginBottom: 24 }}
+      >
+        {browseAll ? "Show my interest connections" : "Browse all career paths"}
+      </Button>
+      <section aria-label="Hourly wage scenarios" style={{ marginBottom: 28 }}>
+        <h2 style={{ fontSize: 20 }}>Try an hourly pay scenario</h2>
+        <p style={{ fontSize: 13, color: C.muted }}>
+          At 40 paid hours per week and 52 weeks. These are wage scenarios, not
+          current employer quotes. Change the rate and schedule in Paycheck.
+        </p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {[20, 25, 30, 40].map((rate) => (
+            <Button
+              key={rate}
+              onClick={() =>
+                onSalary(
+                  rate * 2080,
+                  `${hourly(rate)}/hour, 40 hours × 52 weeks`,
+                )
+              }
+            >
+              {hourly(rate)}/hour
+            </Button>
+          ))}
+        </div>
+      </section>
       <div
         style={{
           boxSizing: "border-box",
@@ -3055,7 +3651,7 @@ function CareersPage({ a, b, small, onSalary }) {
         }}
       >
         {careers.map((c, i) => {
-          const net = takeHome(c.entry) / 12 + b.sideNet,
+          const net = takeHome(c.entry) / 12 + b.otherNet,
             gap = b.total - net;
           return (
             <article
@@ -3074,7 +3670,10 @@ function CareersPage({ a, b, small, onSalary }) {
                   marginBottom: 10,
                 }}
               >
-                Interest connection {String(i + 1).padStart(2, "0")}
+                {c.score > 0
+                  ? "Interest connection"
+                  : "Another path to explore"}{" "}
+                {String(i + 1).padStart(2, "0")}
               </div>
               <h2
                 style={{
@@ -3097,6 +3696,14 @@ function CareersPage({ a, b, small, onSalary }) {
               >
                 {c.path}
               </p>
+              {/Photograph|Real Estate/i.test(c.title) && (
+                <Note tone="amber">
+                  This path can involve freelance work or commissions. The
+                  paycheck example treats the amount as employee wages; business
+                  revenue needs expenses and self-employment taxes deducted
+                  separately.
+                </Note>
+              )}
               <div
                 style={{
                   boxSizing: "border-box",
@@ -3115,7 +3722,7 @@ function CareersPage({ a, b, small, onSalary }) {
                       marginBottom: 5,
                     }}
                   >
-                    Example first-job wage
+                    Annual pay example
                   </div>
                   <strong
                     style={{
@@ -3146,7 +3753,7 @@ function CareersPage({ a, b, small, onSalary }) {
                       marginBottom: 5,
                     }}
                   >
-                    Example with experience
+                    Higher pay scenario
                   </div>
                   <strong
                     style={{
@@ -3178,8 +3785,8 @@ function CareersPage({ a, b, small, onSalary }) {
                 }}
               >
                 {gap > 0
-                  ? `${fmt(gap)}/month gap at the example first-job wage.`
-                  : `${fmt(-gap)}/month left after your plan at the example first-job wage.`}
+                  ? `${fmt(gap)}/month gap at the annual pay example.`
+                  : `${fmt(-gap)}/month left after your plan at the annual pay example.`}
               </p>
               <div
                 style={{
@@ -3204,7 +3811,7 @@ function CareersPage({ a, b, small, onSalary }) {
                   flexWrap: "wrap",
                 }}
               >
-                <Button onClick={() => onSalary(c.entry)}>
+                <Button onClick={() => onSalary(c.entry, c.title)}>
                   Test this wage
                 </Button>
                 <a
@@ -3229,16 +3836,33 @@ function CareersPage({ a, b, small, onSalary }) {
         The links describe occupations. They do not verify the example salaries
         above. Some titles cover several occupations, and local pay, training
         requirements, schedules, and hiring conditions vary. There are no
-        “likelihood of success” scores in this version.
+        guaranteed outcomes. Compare training time and costs, daily work, and
+        actual offers alongside the pay.
       </Note>
     </>
   );
 }
-function PaycheckPage({ a, b, salary, setSalary, small }) {
+function PaycheckPage({ a, b, salary, setSalary, update, small }) {
   const taxes = taxBreakdown(salary),
     net = takeHome(salary) / 12,
-    available = net + b.sideNet,
+    available = net + b.otherNet,
     gap = available - b.total;
+  const hours = a.comparisonHours,
+    weeks = a.comparisonWeeks,
+    paidHours = hours * weeks;
+  const schedule = (key, value) => {
+    const nextHours = key === "comparisonHours" ? value : hours;
+    const nextWeeks = key === "comparisonWeeks" ? value : weeks;
+    update({
+      [key]: value,
+      comparisonCareer: "",
+      comparisonSalary:
+        salary === null
+          ? null
+          : Math.round((salary / paidHours) * nextHours * nextWeeks * 100) /
+            100,
+    });
+  };
   const deductions = [
     ["Federal income tax", taxes.federal],
     ["California income tax", taxes.california],
@@ -3266,32 +3890,54 @@ function PaycheckPage({ a, b, salary, setSalary, small }) {
             label="Annual gross wages"
             help="Before income taxes and payroll deductions."
           >
-            <input
-              type="number"
-              min="0"
-              max="10000000"
-              step="1000"
+            <AmountInput
               value={salary}
-              onChange={(e) => setSalary(number(e.target.value))}
-              style={inputStyle}
+              allowBlank
+              max={10000000}
+              onChange={setSalary}
+              placeholder="Enter an annual wage"
             />
           </Field>
           <Field
             label="Or enter an hourly wage"
-            help="Assumes 2,080 paid hours a year. Real schedules and unpaid time can change this."
+            help="Regular paid hours only. Overtime premiums, tips and unpaid time need separate consideration."
           >
-            <input
-              type="number"
-              min="0"
-              max="4807"
-              step="0.5"
-              value={Math.round((salary / 2080) * 100) / 100}
-              onChange={(e) =>
-                setSalary(Math.round(number(e.target.value, 4807) * 2080))
+            <AmountInput
+              value={
+                salary === null
+                  ? null
+                  : Math.round((salary / paidHours) * 100) / 100
               }
-              style={inputStyle}
+              allowBlank
+              max={Math.floor((10000000 / paidHours) * 100) / 100}
+              onChange={(v) =>
+                setSalary(
+                  v === null ? null : Math.round(v * paidHours * 100) / 100,
+                )
+              }
             />
           </Field>
+          <Field label="Paid hours per week">
+            <AmountInput
+              value={hours}
+              min={1}
+              max={80}
+              onChange={(v) => schedule("comparisonHours", v)}
+            />
+          </Field>
+          <Field label="Paid weeks per year">
+            <AmountInput
+              value={weeks}
+              min={1}
+              max={52}
+              onChange={(v) => schedule("comparisonWeeks", v)}
+            />
+          </Field>
+          {a.comparisonCareer && (
+            <p style={{ color: C.muted, fontSize: 13 }}>
+              Selected scenario: {a.comparisonCareer}
+            </p>
+          )}
           <Note>
             Health premiums in your plan remain a budget expense here; they are
             not subtracted twice from this paycheck. Actual benefits may be
@@ -3333,7 +3979,7 @@ function PaycheckPage({ a, b, salary, setSalary, small }) {
                 color: gap >= 0 ? C.green : C.amber,
               }}
             >
-              {fmt(Math.abs(gap))}
+              {salary === null ? "Choose a wage" : fmt(Math.abs(gap))}
             </div>
             <p
               style={{
@@ -3343,160 +3989,176 @@ function PaycheckPage({ a, b, salary, setSalary, small }) {
                 lineHeight: 1.8,
               }}
             >
-              {gap >= 0
-                ? "Left after living expenses and your savings target."
-                : "Still needed each month to cover living expenses and your savings target."}
-              {b.sideNet > 0 &&
-                ` Includes ${fmt(b.sideNet)} in assumed net side income.`}
+              {salary === null
+                ? "Enter a wage or choose a career scenario to compare it with your plan."
+                : gap >= 0
+                  ? "Left after living expenses and your savings target."
+                  : "Still needed each month to cover living expenses and your savings target."}
+              {salary !== null &&
+                b.otherNet > 0 &&
+                ` Includes ${fmt(b.otherNet)} in other available monthly income.`}
             </p>
           </div>
         </section>
-        <section
-          aria-label="Simplified monthly paystub"
-          style={{
-            boxSizing: "border-box",
-            borderTop: `4px solid ${C.ink}`,
-            background: C.soft,
-            padding: small ? 24 : 32,
-          }}
-        >
-          <div
+        {salary !== null && (
+          <section
+            aria-label="Simplified monthly paystub"
             style={{
               boxSizing: "border-box",
-              display: "flex",
-              justifyContent: "space-between",
-              gap: 20,
-              marginBottom: 28,
+              borderTop: `4px solid ${C.ink}`,
+              background: C.soft,
+              padding: small ? 24 : 32,
             }}
           >
-            <div>
-              <div style={eyebrow}>Example paystub</div>
-              <div
-                style={{
-                  boxSizing: "border-box",
-                  fontSize: 12,
-                  color: C.muted,
-                  marginTop: 8,
-                }}
-              >
-                Monthly equivalent · 2024 model
-              </div>
-            </div>
             <div
-              style={{ boxSizing: "border-box", fontSize: 12, fontWeight: 650 }}
-            >
-              {a.name}
-            </div>
-          </div>
-          <div
-            style={{
-              boxSizing: "border-box",
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: 17,
-              fontWeight: 700,
-              marginBottom: 24,
-            }}
-          >
-            <span>Gross wages</span>
-            <span>{fmt(salary / 12)}</span>
-          </div>
-          <div
-            style={{ boxSizing: "border-box", ...eyebrow, marginBottom: 10 }}
-          >
-            Estimated taxes, before credits
-          </div>
-          {deductions.map(([label, amount]) => (
-            <div
-              key={label}
               style={{
                 boxSizing: "border-box",
                 display: "flex",
                 justifyContent: "space-between",
-                gap: 16,
-                padding: "12px 0",
-                borderBottom: `1px solid ${C.line}`,
-                fontSize: 13,
-                color: C.muted,
+                gap: 20,
+                marginBottom: 28,
               }}
             >
-              <span>{label}</span>
-              <span style={{ boxSizing: "border-box", whiteSpace: "nowrap" }}>
-                −{fmt(amount / 12)}
-              </span>
+              <div>
+                <div style={eyebrow}>Example paystub</div>
+                <div
+                  style={{
+                    boxSizing: "border-box",
+                    fontSize: 12,
+                    color: C.muted,
+                    marginTop: 8,
+                  }}
+                >
+                  Monthly equivalent · 2024 model
+                </div>
+              </div>
+              <div
+                style={{
+                  boxSizing: "border-box",
+                  fontSize: 12,
+                  fontWeight: 650,
+                  minWidth: 0,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {a.name}
+              </div>
             </div>
-          ))}
-          <div
-            style={{
-              boxSizing: "border-box",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: 20,
-              paddingTop: 24,
-            }}
-          >
-            <strong>Estimated take-home</strong>
-            <strong
+            <div
               style={{
                 boxSizing: "border-box",
-                fontSize: 30,
-                letterSpacing: -1,
-                color: C.blue,
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 17,
+                fontWeight: 700,
+                marginBottom: 24,
               }}
             >
-              {fmt(net)}
-            </strong>
-          </div>
-          <p
-            style={{
-              boxSizing: "border-box",
-              fontSize: 11,
-              color: C.muted,
-              lineHeight: 1.7,
-              marginBottom: 0,
-            }}
-          >
-            Not an employer paystub or tax advice. Excludes credits, retirement
-            contributions, garnishments, union dues, and benefit deductions.
-            This is an annual tax estimate divided by 12, not an exact payroll
-            withholding calculation.
-          </p>
-        </section>
+              <span>Gross wages</span>
+              <span>{fmt(salary / 12)}</span>
+            </div>
+            <div
+              style={{ boxSizing: "border-box", ...eyebrow, marginBottom: 10 }}
+            >
+              Estimated taxes, before credits
+            </div>
+            {deductions.map(([label, amount]) => (
+              <div
+                key={label}
+                style={{
+                  boxSizing: "border-box",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  padding: "12px 0",
+                  borderBottom: `1px solid ${C.line}`,
+                  fontSize: 13,
+                  color: C.muted,
+                }}
+              >
+                <span>{label}</span>
+                <span style={{ boxSizing: "border-box", whiteSpace: "nowrap" }}>
+                  −{fmt(amount / 12)}
+                </span>
+              </div>
+            ))}
+            <div
+              style={{
+                boxSizing: "border-box",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "baseline",
+                gap: 20,
+                paddingTop: 24,
+              }}
+            >
+              <strong>Estimated take-home</strong>
+              <strong
+                style={{
+                  boxSizing: "border-box",
+                  fontSize: 30,
+                  letterSpacing: -1,
+                  color: C.blue,
+                }}
+              >
+                {fmt(net)}
+              </strong>
+            </div>
+            <p
+              style={{
+                boxSizing: "border-box",
+                fontSize: 11,
+                color: C.muted,
+                lineHeight: 1.7,
+                marginBottom: 0,
+              }}
+            >
+              Not an employer paystub or tax advice. Excludes credits,
+              retirement contributions, garnishments, union dues, and benefit
+              deductions. This is an annual tax estimate divided by 12, not an
+              exact payroll withholding calculation.
+            </p>
+          </section>
+        )}
       </div>
     </>
   );
 }
-export function scenarioBudget(a, scenario, contribution = 300) {
+export function scenarioPatch(a, scenario, contribution) {
   if (scenario === "family")
-    return budget({
-      ...a,
+    return {
       housing: "family",
       roommate: false,
-      homeContribution: number(contribution),
-      rOut: false,
-      hOut: false,
-    });
+      homeContribution: number(
+        contribution ?? (a.housing === "family" ? a.homeContribution : 300),
+        100000,
+      ),
+    };
   if (scenario === "roommate")
-    return budget({
-      ...a,
+    return {
       housing: "2br",
       roommate: true,
-      htype: a.htype === "partner_work" ? "solo" : a.htype,
-      rOut: false,
-      hOut: false,
-    });
-  return budget(a);
+      [a.budgetMode === "household"
+        ? "householdHomeShare"
+        : "personalHomeShare"]: 50,
+    };
+  return {};
 }
-function WhatIfPage({ a, b, scenario, setScenario, small }) {
-  const [contribution, setContribution] = useState(300);
+export function scenarioBudget(a, scenario, contribution) {
+  return budget({ ...a, ...scenarioPatch(a, scenario, contribution) });
+}
+function WhatIfPage({ a, b, scenario, setScenario, update, small }) {
+  const contribution =
+    a.whatIfContribution ?? (a.housing === "family" ? a.homeContribution : 300);
+  const setContribution = (whatIfContribution) =>
+    update({ whatIfContribution });
   const other = scenarioBudget(a, scenario, contribution),
     saving = b.total - other.total;
   const options = [
     {
       id: "roommate",
       l: "Share a two-bedroom rental",
-      note: "Use the $2,100 example rent, split two ways, with shared utilities.",
+      note: "Assign 50% of a $2,100 two-bedroom rent and shared utilities to this plan.",
     },
     {
       id: "family",
@@ -3526,24 +4188,15 @@ function WhatIfPage({ a, b, scenario, setScenario, small }) {
               label="Monthly contribution at home"
               help="Food, phone, and your selected utilities stay in the plan. Change those separately if someone else covers them."
             >
-              <input
-                type="number"
-                min="0"
-                max="100000"
-                value={contribution}
-                onChange={(e) =>
-                  setContribution(number(e.target.value, 100000))
-                }
-                style={inputStyle}
-              />
+              <AmountInput value={contribution} onChange={setContribution} />
             </Field>
           )}
           {scenario === "roommate" && (
             <Note>
-              This models one other person sharing rent and shared utilities.
-              Food, personal costs, health premiums, and child costs stay yours.
-              If you chose a working partner, this scenario replaces that
-              housing-sharing arrangement rather than dividing costs twice.
+              This assigns half of housing and shared utilities to this plan.
+              Household type, children, coverage choices and other expenses stay
+              the same. Check that a two-bedroom home and this bill share fit
+              everyone involved.
             </Note>
           )}
         </section>
@@ -3646,6 +4299,30 @@ function WhatIfPage({ a, b, scenario, setScenario, small }) {
             {saving >= 0 ? "less" : "more"} needed each month, including the
             adjusted savings goal.
           </p>
+          <p style={{ color: C.muted, fontSize: 13 }}>
+            Living expenses change by{" "}
+            {fmt(Math.abs(b.expenses - other.expenses))}/month; the general
+            savings target changes by {fmt(Math.abs(b.savings - other.savings))}
+            /month.
+          </p>
+          {Math.abs(saving) < 0.005 && (
+            <Note>
+              This alternative has the same monthly cost as your current plan.
+            </Note>
+          )}
+          <Button
+            primary
+            style={{ margin: "18px 0" }}
+            onClick={() =>
+              visibleFieldsValid() &&
+              update({
+                ...scenarioPatch(a, scenario, contribution),
+                resultView: "overview",
+              })
+            }
+          >
+            Use this alternative in my plan
+          </Button>
           <div
             style={{
               boxSizing: "border-box",
@@ -3734,20 +4411,20 @@ function SourcesPage() {
       <div style={{ boxSizing: "border-box", maxWidth: 850 }}>
         {[
           [
-            "Prices are planning scenarios, not verified current averages.",
-            "Rent, food, childcare, insurance, wages, and the other amounts are classroom estimates from the original tool or illustrative additions. They have not been checked against current Perris listings or quotes. Insurance risk-area tiers are examples, not an underwriting model. Check real listings, multiple quotes, and actual job postings before relying on any figure.",
+            "Local ballpark prices, with room for your situation.",
+            "The cost presets support a Perris / Inland Empire classroom discussion and reflect local ballpark amounts supplied for this activity. They are not a live database or personalized quotes. This release has not independently rechecked each price or career pay example. Insurance risk tiers are teaching examples. Use actual listings, quotes and job offers when building a real plan.",
           ],
           [
             "The tax model uses 2024 rules, before credits.",
             "Federal single deduction: $14,600. California single deduction: $5,540. The model uses progressive federal and CA brackets, Social Security at 6.2% up to $168,600, Medicare at 1.45% plus 0.9% above $200,000, and 2024 CA SDI at 1.1% without a wage cap. It includes CA's additional 1% tax on taxable income above $1 million, but excludes personal exemption and other credits, itemized deductions, and benefit deductions. Family choices do not change filing status. These historical rules do not represent a verified 2026 paycheck.",
           ],
           [
-            "Roommates and working partners share selected costs.",
-            "Rent or mortgage, property tax, home maintenance, internet, water/gas, and electricity are divided between two when a working partner is selected. A roommate only splits rented housing and shared utilities. Personal insurance, phone, food, and child costs stay assigned to you. A stay-at-home partner adds a second adult food budget and assumes no paid daycare. Partner healthcare and many other partner costs are not modeled, so this is not a complete household budget.",
+            "Choose your share or a household plan.",
+            "Personal mode includes your own costs and your assigned share of housing, shared utilities and child costs. A working partner defaults to a 50% share of shared bills and child costs, while their personal expenses and income stay outside your plan. A partner without earnings adds editable food, transport, healthcare and personal costs. Household mode includes both adults, 100% of entered child costs and any other adult wage. Housing bill shares are editable in either mode. Family contributions are already the amount assigned to the plan and are not divided again. Renters insurance remains a personal policy amount. Shared streaming is counted once. Other adult healthcare can include dependents; child medical costs are not otherwise automatic. The tax model still estimates each wage as a separate single filer.",
           ],
           [
             "Savings is a share of required take-home.",
-            "Required take-home equals living expenses divided by (1 minus the savings rate). A 10% target on $2,970 of expenses requires $3,300 take-home and $330 savings. Loans are modeled at 6.5% over 120 monthly payments when selected. Side income keeps 75% after a simple reserve; actual self-employment taxes and business expenses are not calculated.",
+            "Required take-home equals living expenses divided by (1 minus the savings rate). A 10% target on $2,970 of expenses requires $3,300 take-home and $330 savings. Loans are modeled at 6.5% over 120 monthly payments when selected. Side income defaults to money already after expenses and taxes. An optional gross scenario reserves 25%; actual self-employment taxes and business costs are not calculated. Changing the test paycheck keeps the original dollar savings target rather than recalculating its percentage of that paycheck.",
           ],
           [
             "Career matches connect interests, not aptitude or outcomes.",
@@ -3759,7 +4436,7 @@ function SourcesPage() {
           ],
           [
             "Your answers stay in this tab.",
-            "There is no account, tracking, or upload of your answers. Refreshing or closing the tab clears the plan. A first name or nickname is enough. Use the print summary to keep a copy.",
+            "There is no account or upload of your answers. Refreshing or closing the tab clears the plan. Save progress downloads a JSON file with your name or nickname, choices and comparison inputs. Open progress restores it later on this or another device. Keep that file somewhere appropriate, especially on a shared school computer. A nickname is enough. You can also print a discussion summary.",
           ],
         ].map(([title, body]) => (
           <section
@@ -3841,7 +4518,7 @@ function SourcesPage() {
 
 function PrintSummary({ a, b, salary }) {
   const matches = matchCareers(a.pers),
-    gap = takeHome(salary) / 12 + b.sideNet - b.total;
+    gap = takeHome(salary) / 12 + b.otherNet - b.total;
   return (
     <article
       style={{
@@ -3889,9 +4566,9 @@ function PrintSummary({ a, b, salary }) {
         }}
       >
         {[
-          ["Monthly plan", fmt(b.total)],
+          [b.scopeLabel, fmt(b.total)],
           ["Annual wages needed", fmt(b.salary)],
-          ["Hourly equivalent", fmt(b.salary / 2080)],
+          ["Hourly equivalent", hourly(b.salary / 2080)],
         ].map(([label, value]) => (
           <div key={label}>
             <div
@@ -3943,6 +4620,8 @@ function PrintSummary({ a, b, salary }) {
             Includes a {Math.round(b.rate * 100)}% savings target.
             {b.sideNet > 0 &&
               ` Assumes ${fmt(b.sideNet)}/month net side income.`}
+            {b.partnerNet > 0 &&
+              ` Assumes ${fmt(b.partnerNet)}/month other adult take-home.`}
           </p>
         </section>
         <section>
@@ -3964,6 +4643,9 @@ function PrintSummary({ a, b, salary }) {
             Student loans:{" "}
             {fmt(["trade", "cc", "4year"].includes(a.plan) ? a.loan : 0)}{" "}
             borrowed
+            {["trade", "cc", "4year"].includes(a.plan) && a.loan > 0
+              ? `; ${fmt(loanPayment(a.loan))}/month`
+              : ""}
           </p>
         </section>
       </div>
@@ -3980,13 +4662,20 @@ function PrintSummary({ a, b, salary }) {
           My starting-pay reality check
         </h2>
         <p>
-          At {fmt(salary)}/year gross wages, estimated monthly take-home is{" "}
-          {fmt(takeHome(salary) / 12)}
-          {b.sideNet > 0
-            ? `, plus ${fmt(b.sideNet)} assumed net side income`
-            : ""}
-          . That leaves a {fmt(Math.abs(gap))} monthly{" "}
-          {gap < 0 ? "gap" : "surplus"} compared with my plan.
+          {salary === null ? (
+            "No comparison wage selected yet. Choose a wage in the app to test it against the plan."
+          ) : (
+            <>
+              {a.comparisonCareer && `${a.comparisonCareer}: `}At {fmt(salary)}
+              /year gross wages, estimated monthly take-home is{" "}
+              {fmt(takeHome(salary) / 12)}
+              {b.otherNet > 0
+                ? `, plus ${fmt(b.otherNet)} other net monthly income`
+                : ""}
+              . That leaves a {fmt(Math.abs(gap))} monthly{" "}
+              {gap < 0 ? "gap" : "surplus"} compared with my plan.
+            </>
+          )}
         </p>
       </section>
       <section
@@ -4042,26 +4731,30 @@ function PrintSummary({ a, b, salary }) {
           marginTop: 22,
         }}
       >
-        Classroom estimates, not verified current local prices, quotes, or
-        guaranteed wages. Historical 2024 single-filer tax model before credits
-        and benefits. Assumes 2,080 paid hours/year. Some household and medical
-        costs are excluded. Review the app's assumptions before relying on the
-        plan.
+        Local classroom planning estimates; actual prices and wages vary.
+        Historical 2024 single-filer tax model before credits and benefits.
+        Assumes 2,080 paid hours/year. Review household shares, dependent
+        healthcare and medical reserves. Review the app's assumptions before
+        relying on the plan.
       </p>
       {[
-        a.rOut && "Renter's insurance",
-        a.hOut && "Homeowner's insurance",
-        a.ciOut && "Car insurance",
-        a.crOut && "Registration",
+        rented(a.housing) && a.rOut && "Renter's insurance",
+        find(HOUSING, a.housing)?.ins === "homeowners" &&
+          a.hOut &&
+          "Homeowner's insurance",
+        find(TRANS, a.trans)?.car && a.ciOut && "Car insurance",
+        find(TRANS, a.trans)?.car && a.crOut && "Registration",
         a.hlOut && "Health insurance",
       ].filter(Boolean).length > 0 && (
         <p style={{ boxSizing: "border-box", fontSize: 10 }}>
           Removed from scenario:{" "}
           {[
-            a.rOut && "renter's insurance",
-            a.hOut && "homeowner's insurance",
-            a.ciOut && "car insurance",
-            a.crOut && "registration",
+            rented(a.housing) && a.rOut && "renter's insurance",
+            find(HOUSING, a.housing)?.ins === "homeowners" &&
+              a.hOut &&
+              "homeowner's insurance",
+            find(TRANS, a.trans)?.car && a.ciOut && "car insurance",
+            find(TRANS, a.trans)?.car && a.crOut && "registration",
             a.hlOut && "health insurance",
           ]
             .filter(Boolean)
@@ -4072,10 +4765,27 @@ function PrintSummary({ a, b, salary }) {
     </article>
   );
 }
-function Results({ a, onEdit, onNew, small, isExample }) {
-  const [view, setView] = useState("overview"),
-    [scenario, setScenario] = useState("roommate"),
-    [salary, setSalary] = useState(50000);
+function Results({
+  a,
+  update,
+  onEdit,
+  onNew,
+  small,
+  isExample,
+  onSave,
+  onLoad,
+}) {
+  const view = a.resultView,
+    scenario = a.whatIfScenario,
+    salary = a.comparisonSalary;
+  const setView = (resultView) => update({ resultView });
+  const setScenario = (whatIfScenario) => update({ whatIfScenario });
+  const setSalary = (comparisonSalary, comparisonCareer = "") =>
+    update({
+      comparisonSalary,
+      comparisonCareer,
+      ...(comparisonCareer ? { comparisonHours: 40, comparisonWeeks: 52 } : {}),
+    });
   const b = useMemo(() => budget(a), [a]),
     screen = useRef(null),
     print = useRef(null),
@@ -4097,11 +4807,12 @@ function Results({ a, onEdit, onNew, small, isExample }) {
     };
   }, []);
   const show = (next) => {
+    if (!visibleFieldsValid()) return;
     setView(next);
     window.scrollTo(0, 0);
     requestAnimationFrame(() => heading.current?.focus());
   };
-  const printPlan = () => window.print();
+  const printPlan = () => visibleFieldsValid() && window.print();
   const nav = [
     ["overview", "Overview"],
     ["budget", "Your budget"],
@@ -4113,10 +4824,10 @@ function Results({ a, onEdit, onNew, small, isExample }) {
   return (
     <>
       <div ref={screen}>
-        <Header small={small}>
+        <Header small={small} onSave={onSave} onLoad={onLoad}>
           <button
             type="button"
-            onClick={onEdit}
+            onClick={() => onEdit(0)}
             style={{
               boxSizing: "border-box",
               border: 0,
@@ -4228,6 +4939,7 @@ function Results({ a, onEdit, onNew, small, isExample }) {
                 show("whatif");
               }}
               onPrint={printPlan}
+              onEdit={onEdit}
               salary={salary}
               setSalary={setSalary}
             />
@@ -4238,8 +4950,8 @@ function Results({ a, onEdit, onNew, small, isExample }) {
               a={a}
               b={b}
               small={small}
-              onSalary={(s) => {
-                setSalary(s);
+              onSalary={(s, career) => {
+                setSalary(s, career);
                 show("paycheck");
               }}
             />
@@ -4250,6 +4962,7 @@ function Results({ a, onEdit, onNew, small, isExample }) {
               b={b}
               salary={salary}
               setSalary={setSalary}
+              update={update}
               small={small}
             />
           )}
@@ -4259,6 +4972,7 @@ function Results({ a, onEdit, onNew, small, isExample }) {
               b={b}
               scenario={scenario}
               setScenario={setScenario}
+              update={update}
               small={small}
             />
           )}
@@ -4316,11 +5030,11 @@ function Results({ a, onEdit, onNew, small, isExample }) {
     </>
   );
 }
-function Welcome({ small, onStart, onExample }) {
+function Welcome({ small, onStart, onExample, onLoad }) {
   const b = budget(DEMO);
   return (
     <>
-      <Header small={small}>
+      <Header small={small} onLoad={onLoad}>
         <span
           style={{
             boxSizing: "border-box",
@@ -4574,9 +5288,10 @@ function Welcome({ small, onStart, onExample }) {
             margin: "36px 0 0",
           }}
         >
-          A classroom activity for exploring possibilities. Prices and wages are
-          illustrative estimates; tax calculations use a historical 2024 model.
-          Your answers stay in this tab and disappear on refresh.
+          Local planning estimates for a Perris / Inland Empire classroom. Your
+          situation and actual prices will differ. Taxes use a historical 2024
+          model. No account is needed. Save a progress file before refreshing or
+          closing the tab; open it later to continue. A nickname is enough.
         </p>
       </main>
     </>
@@ -4603,6 +5318,59 @@ export default function App() {
   );
   const [step, setStep] = useState(0);
   const [decision, setDecision] = useState(null);
+  const [fileError, setFileError] = useState("");
+  const [editing, setEditing] = useState(false);
+  const fileInput = useRef(null);
+  const clearExampleLink = () => {
+    if (
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("example")
+    ) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("example");
+      try {
+        window.history.replaceState(
+          null,
+          "",
+          url.pathname + url.search + url.hash,
+        );
+      } catch {
+        /* Some embedded previews restrict history access. */
+      }
+    }
+  };
+  const save = () => {
+    if (!visibleFieldsValid()) return;
+    const contents = serializePlan(a, step, mode);
+    const url = URL.createObjectURL(
+      new Blob([contents], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `life-plan-${a.name.replace(/[^a-z0-9_-]/gi, "").slice(0, 32) || "student"}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const open = () => fileInput.current?.click();
+  const loadFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      if (file.size > 500000)
+        throw new Error("Choose a progress file smaller than 500 KB.");
+      const restored = parseSavedPlan(await file.text());
+      setA(restored.plan);
+      setStep(restored.step);
+      setEditing(false);
+      setExample(false);
+      clearExampleLink();
+      setFileError("");
+      enter(restored.screen);
+    } catch (error) {
+      setFileError(`${error.message} Your current plan has been kept.`);
+    }
+  };
   useEffect(() => {
     const title = document.querySelector("main h1");
     if (title) {
@@ -4612,7 +5380,23 @@ export default function App() {
     }
   }, [mode]);
   const update = (patch) => {
-    setExample(false);
+    if (
+      Object.keys(patch).some(
+        (key) =>
+          ![
+            "resultView",
+            "whatIfScenario",
+            "whatIfContribution",
+            "comparisonSalary",
+            "comparisonCareer",
+            "comparisonHours",
+            "comparisonWeeks",
+          ].includes(key),
+      )
+    ) {
+      setExample(false);
+      clearExampleLink();
+    }
     setA((previous) => ({ ...previous, ...patch }));
   };
   const enter = (next) => {
@@ -4621,6 +5405,9 @@ export default function App() {
   };
   const start = () => {
     setExample(false);
+    clearExampleLink();
+    setEditing(false);
+    setFileError("");
     setA({ ...EMPTY });
     setStep(0);
     enter("wizard");
@@ -4630,7 +5417,7 @@ export default function App() {
     else
       setDecision({
         title: "Start a new plan?",
-        body: "This will clear your current answers. You can print your summary first if you want to keep a copy.",
+        body: "This will clear your current answers. Save a progress file or print your summary first if you want to keep a copy.",
         proceed: start,
       });
   };
@@ -4658,8 +5445,30 @@ export default function App() {
         background: "#fff",
         minHeight: "100vh",
         lineHeight: 1.5,
+        minWidth: 0,
+        overflowWrap: "anywhere",
       }}
     >
+      <input
+        type="file"
+        accept=".json,application/json"
+        ref={fileInput}
+        aria-label="Open a saved progress file"
+        onChange={loadFile}
+        style={{ display: "none" }}
+      />
+      {fileError && (
+        <div
+          role="alert"
+          style={{
+            padding: "16px 24px",
+            background: C.lightAmber,
+            color: C.ink,
+          }}
+        >
+          {fileError} <Button onClick={() => setFileError("")}>Dismiss</Button>
+        </div>
+      )}
       {mode === "welcome" && (
         <Welcome
           small={small}
@@ -4672,6 +5481,7 @@ export default function App() {
             enter("wizard");
           }}
           onExample={example}
+          onLoad={open}
         />
       )}
       {mode === "wizard" && (
@@ -4680,7 +5490,13 @@ export default function App() {
           update={update}
           step={step}
           setStep={setStep}
-          onFinish={() => enter("results")}
+          onFinish={() => {
+            setA((previous) => ({ ...previous, resultView: "overview" }));
+            enter("results");
+          }}
+          onSave={save}
+          onLoad={open}
+          editing={editing}
           onHome={() => enter("welcome")}
           small={small}
         />
@@ -4688,8 +5504,13 @@ export default function App() {
       {mode === "results" && (
         <Results
           a={a}
-          onEdit={() => {
-            setStep(0);
+          update={update}
+          onSave={save}
+          onLoad={open}
+          onEdit={(nextStep = 0) => {
+            if (!visibleFieldsValid()) return;
+            setEditing(true);
+            setStep(nextStep);
             enter("wizard");
           }}
           onNew={newPlan}

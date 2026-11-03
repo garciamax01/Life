@@ -11,7 +11,7 @@ npm ci
 npm run dev -- --host 0.0.0.0 --port 4173 --strictPort
 ```
 
-The welcome screen includes an example plan. `?example` also opens that clearly labeled sample directly. Answers live in React state only. Refreshing or closing the tab clears them. There is no analytics, backend, account, browser storage, or upload of student answers.
+The welcome screen includes an example plan. `?example` also opens that clearly labeled sample directly. Answers live in React state only. Refreshing or closing the tab clears them. Save progress downloads a JSON file, and Open progress restores it without an account, browser storage or upload of student answers. The file contains the student’s name or nickname, choices and comparison inputs; keep it appropriately on shared devices.
 
 ## Build and use as a React artifact
 
@@ -36,7 +36,7 @@ Future releases should test and commit the source, then run `npm run publish:pag
 ## Validation
 
 ```sh
-npm test                 # 20 calculation/regression tests
+npm test                 # 30 calculation/regression tests
 npm run build            # Production bundle and standalone artifact
 ```
 
@@ -55,21 +55,21 @@ Browser tests use local Chromium; change the executable path in the test configu
 - Retained the 13-step journey and original choice data, with a new welcome screen, responsive layout, calmer language, and accessible button selections.
 - Centralized expense line items so the breakdown, charts, required salary, paycheck comparison, and what-if scenarios use the same budget.
 - Corrected savings to a percentage of required take-home, rather than a percentage of expenses.
-- Added shared rent/utilities, a contribution at home, student loan planning, repair/home reserves, and an explicitly simplified side-income reserve.
+- Added a default personal-share budget and an optional household plan with editable bill shares, other adult costs and wages, child cost shares, a contribution at home, paid-off vehicles, covered meals, medical reserves and student loan planning. Side income can be entered net or with an explicitly simplified gross reserve.
 - Added a monthly paystub, editable wage comparison, interest-based career exploration, non-destructive alternatives, and a one-page printable reflection summary.
-- Removed unsupported career success probabilities and salary-based bias from interest matching. Pay examples are labeled scenarios, with separate starting and experienced examples and a practical next step.
+- Removed unsupported career success probabilities and salary-based bias from interest matching. Pay examples are labeled scenarios, with annual income examples and a practical next step.
 - Corrected insurance wording: renter's insurance can be required by a lease; it is not a general legal requirement. Standard policies generally exclude floods. Health coverage penalties and eligibility are not calculated.
 
 ## Financial model and outstanding fact-check
 
-**This version is a teaching simulation, not a verified current Perris cost-of-living database.** Prices, insurance premiums, childcare, and career pay are illustrative scenarios. The sources panel says this explicitly. A BLS occupation link is not a citation validating a displayed wage.
+**The cost presets support a Perris / Inland Empire classroom discussion and reflect local ballpark amounts supplied for the activity.** They are not a live database or personalized quotes. This release has not independently rechecked each price or career pay example. A BLS occupation link does not validate a displayed wage.
 
 The historical **2024 single-filer** model uses federal deduction $14,600, California deduction $5,540, progressive brackets, Social Security at 6.2% up to $168,600, Medicare at 1.45% plus 0.9% over $200,000, and CA SDI at 1.1% without a wage cap. CA's additional 1% tax applies to taxable income above $1 million. The model excludes credits, payroll benefits, filing-status changes, and eligibility calculations. It is intentionally labeled 2024 throughout, rather than implying that it produces a current 2026 paycheck.
 
-Savings: `required take-home = living expenses / (1 - savings rate)`. Student loans: a 6.5%, ten-year amortization scenario. Side income: 25% reserved for taxes/business costs, not an actual self-employment tax calculation. The working-partner scenario shares selected bills but does not add partner income. Partner healthcare and some household costs are not included. Read the in-app assumptions before using results in class.
+Savings: `required take-home = living expenses / (1 - savings rate)`. Student loans: a 6.5%, ten-year amortization scenario. Side income defaults to money already after expenses and taxes; an optional gross scenario reserves 25%, not an actual self-employment tax calculation. Personal mode includes the student’s assigned bills and excludes a working partner’s personal expenses and income. A non-earning partner adds editable personal costs. Household mode includes both adults and any other adult wage entered; each wage is estimated as a separate single filer. Childcare and supplies are editable, with an assigned share in personal mode. Dependent medical coverage must be included explicitly in medical reserves or the other adult healthcare amount. Read the in-app assumptions before using results in class.
 
 An attempted read of the official FTB tax reference was denied by the cloud network proxy. Current local data and the historical tax parameters have **not been independently verified against live official sources in this task**. Follow-up work should verify the model and replace scenario prices/pay with dated evidence from IRS, FTB, EDD, BLS, actual listings, and quotes. Those destinations require access through environment network settings. No blocked destinations were bypassed.
 
 ## Boundaries preserved
 
-No debt scenarios, local resource directory, retirement growth preview, parent mode, inflation section, or class-wide student data collection was added. Save/resume remains unimplemented because the artifact constraint prohibits browser storage. Printing is the available way to keep a copy.
+No debt scenarios, local resource directory, retirement growth preview, parent mode, inflation section, or class-wide student data collection was added. Save/resume uses portable JSON files without browser storage. Printing provides a discussion summary. The monthly total and required annual wage are shown together; wage, schedule and alternative inputs survive edits and file restores.

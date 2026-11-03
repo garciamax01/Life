@@ -11,7 +11,18 @@ const origin = git(["remote", "get-url", "origin"]);
 if (!/^https:\/\/github\.com\/garciamax01\/Life(?:\.git)?\/?$/i.test(origin)) {
   throw new Error("Publish only from the authorized garciamax01/Life origin.");
 }
-if (git(["status", "--porcelain"])) {
+// Untracked local review evidence is not a build input or a public deliverable.
+// Every tracked change and every other untracked file must be committed first.
+const trackedChanges = git(["status", "--porcelain", "--untracked-files=no"]);
+const untrackedInputs = git([
+  "ls-files",
+  "--others",
+  "--exclude-standard",
+  "-z",
+])
+  .split("\0")
+  .filter((path) => path && !path.startsWith("docs/reviews/"));
+if (trackedChanges || untrackedInputs.length) {
   throw new Error(
     "Commit the source changes before publishing so the release records an exact source revision.",
   );
