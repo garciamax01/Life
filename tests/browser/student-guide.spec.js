@@ -13,6 +13,7 @@ test("a student can complete all 13 steps and reach a coherent personal budget",
     page.getByRole("button", { name: "Continue", exact: true }),
   ).toBeDisabled();
   await page.getByLabel(/What should we call you/).fill("Jordan");
+  await page.getByLabel("Your first guess: annual salary needed").fill("42000");
   await page.getByLabel("Your grade").selectOption("12th");
   await page
     .getByRole("button", {
@@ -59,6 +60,9 @@ test("a student can complete all 13 steps and reach a coherent personal budget",
     page.getByRole("heading", { name: "Your lifestyle, at a glance." }),
   ).toBeVisible();
   await expect(page.getByText(/Jordan, these are choices/)).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Prediction and first result" }),
+  ).toContainText("$42,000");
   await page.getByRole("button", { name: "Your budget", exact: true }).click();
   await expect(
     page.getByText("Student loan payment", { exact: true }),

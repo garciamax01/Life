@@ -9,6 +9,11 @@ import {
   matchCareers,
   parseSavedPlan,
   serializePlan,
+  captureOriginal,
+  startingCash,
+  postingEstimate,
+  hoursChallenge,
+  safeSourceUrl,
 } from "../src/App.jsx";
 
 const plan = (patch = {}) => ({
@@ -314,5 +319,102 @@ describe("portable progress files", () => {
     );
     expect(restored.step).toBe(0);
     expect(restored.screen).toBe("wizard");
+  });
+});
+
+describe("classroom learning tools", () => {
+  it("preserves an independent original plan and round trips learning notes", () => {
+    const current = parseSavedPlan(
+      JSON.stringify({
+        format: "life-student-guide",
+        version: 1,
+        plan: plan({
+          cloth: "basics",
+          care: "basics",
+          predictionSalary: 40000,
+        }),
+      }),
+    ).plan;
+    const original = captureOriginal(current);
+    current.utils.push("mobile");
+    expect(original.utils).toEqual([]);
+    current.originalPlan = original;
+    current.housing = "family";
+    current.reflectionNext = "Research a local apprenticeship.";
+    const result = parseSavedPlan(serializePlan(current, 12, "results"));
+    expect(result.plan.originalPlan.housing).toBe("studio");
+    expect(result.plan.housing).toBe("family");
+    expect(result.plan.reflectionNext).toBe(current.reflectionNext);
+    expect(result.plan.originalPlan.predictionSalary).toBe(40000);
+    expect(result.screen).toBe("results");
+  });
+  it("rejects recursive snapshots, unsupported source URLs and oversized answers", () => {
+    const file = (patch) =>
+      JSON.stringify({ format: "life-student-guide", version: 1, plan: patch });
+    expect(() =>
+      parseSavedPlan(file({ originalPlan: { originalPlan: {} } })),
+    ).toThrow();
+    expect(() =>
+      parseSavedPlan(file({ jobUrl: "javascript:alert(1)" })),
+    ).toThrow();
+    expect(() =>
+      parseSavedPlan(file({ reflectionNext: "x".repeat(281) })),
+    ).toThrow();
+    expect(safeSourceUrl("https://example.com/job")).toBe(
+      "https://example.com/job",
+    );
+    expect(safeSourceUrl("https://user:password@example.com/job")).toBe("");
+    expect(safeSourceUrl("data:text/html,hello")).toBe("");
+  });
+  it("adds setup cash once without altering recurring expenses and treats blanks as unknown", () => {
+    const a = plan({
+      startHousing: 1350,
+      startFurniture: 500,
+      startMoving: 150,
+      startVehicle: 0,
+      startCashSaved: 1000,
+    });
+    const cash = startingCash(a);
+    expect(cash.complete).toBe(true);
+    expect(cash.extras).toBe(2000);
+    expect(cash.total).toBe(budget(a).total + 2000);
+    expect(cash.remaining).toBe(cash.total - 1000);
+    expect(budget(a).total).toBe(budget(plan()).total);
+    expect(startingCash(plan({ startHousing: 0 })).complete).toBe(false);
+  });
+  it("requires a dated job source and annualizes the entered schedule", () => {
+    const a = plan({
+      jobTitle: "Test role",
+      jobSource: "Test posting",
+      jobReviewed: "2026-11-01",
+      jobPay: 22.5,
+      jobPayBasis: "hourly",
+      jobHours: 30,
+      jobWeeks: 50,
+      jobUrl: "https://example.com/job",
+    });
+    expect(postingEstimate(a)).toEqual({ salary: 33750, valid: true });
+    expect(postingEstimate({ ...a, jobSource: "" }).valid).toBe(false);
+    expect(postingEstimate({ ...a, jobReviewed: "2026-02-31" }).valid).toBe(
+      false,
+    );
+    expect(
+      postingEstimate({ ...a, jobPayBasis: "annual", jobPay: 42000 }).salary,
+    ).toBe(42000);
+  });
+  it("changes only the challenge wage while retaining the current plan and other income", () => {
+    const a = plan({
+      comparisonSalary: 50000,
+      comparisonHours: 40,
+      comparisonWeeks: 52,
+      hustle: 250,
+    });
+    const challenge = hoursChallenge(a);
+    expect(challenge.hours).toBe(30);
+    expect(challenge.salary).toBe(37500);
+    expect(challenge.available).toBeCloseTo(takeHome(37500) / 12 + 250, 8);
+    expect(a.comparisonSalary).toBe(50000);
+    expect(hoursChallenge({ ...a, challengeHours: 0 }).salary).toBe(0);
+    expect(hoursChallenge({ ...a, comparisonSalary: null })).toBe(null);
   });
 });

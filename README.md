@@ -11,7 +11,7 @@ npm ci
 npm run dev -- --host 0.0.0.0 --port 4173 --strictPort
 ```
 
-The welcome screen includes an example plan. `?example` also opens that clearly labeled sample directly. Answers live in React state only. Refreshing or closing the tab clears them. Save progress downloads a JSON file, and Open progress restores it without an account, browser storage or upload of student answers. The file contains the student’s name or nickname, choices and comparison inputs; keep it appropriately on shared devices.
+The welcome screen includes an example plan. `?example` also opens that clearly labeled sample directly. Answers live in React state only. Refreshing or closing the tab clears them. Save progress downloads a JSON file, and Open progress restores it without an account, browser storage or upload of student answers. The file contains the student’s name or nickname, choices and comparison inputs, the saved original plan, job notes, setup estimates, challenge and reflection; keep it appropriately on shared devices.
 
 ## Build and use as a React artifact
 
@@ -36,7 +36,7 @@ Future releases should test and commit the source, then run `npm run publish:pag
 ## Validation
 
 ```sh
-npm test                 # 30 calculation/regression tests
+npm test                 # 35 calculation/regression tests
 npm run build            # Production bundle and standalone artifact
 ```
 
@@ -48,7 +48,7 @@ npm run test:a11y        # Axe checks on five representative screens
 node scripts/capture.mjs
 ```
 
-Browser tests use local Chromium; change the executable path in the test configuration/scripts if the machine installs it elsewhere. Screenshots, accessibility evidence, and a one-page example PDF are generated under ignored `.cache/`. `design-qa.md` records the visual comparison against the selected concept. Automated checks do not replace testing with students or a complete accessibility audit.
+Browser tests use local Chromium; change the executable path in the test configuration/scripts if the machine installs it elsewhere. Screenshots, accessibility evidence, and example PDFs are generated under ignored `.cache/`. `design-qa.md` records the visual comparison against the selected concept. Automated checks do not replace testing with students or a complete accessibility audit.
 
 ## What changed from the pasted version
 
@@ -56,9 +56,19 @@ Browser tests use local Chromium; change the executable path in the test configu
 - Centralized expense line items so the breakdown, charts, required salary, paycheck comparison, and what-if scenarios use the same budget.
 - Corrected savings to a percentage of required take-home, rather than a percentage of expenses.
 - Added a default personal-share budget and an optional household plan with editable bill shares, other adult costs and wages, child cost shares, a contribution at home, paid-off vehicles, covered meals, medical reserves and student loan planning. Side income can be entered net or with an explicitly simplified gross reserve.
-- Added a monthly paystub, editable wage comparison, interest-based career exploration, non-destructive alternatives, and a one-page printable reflection summary.
+- Added a monthly paystub, editable wage comparison, interest-based career exploration, non-destructive alternatives, and a printable reflection summary.
 - Removed unsupported career success probabilities and salary-based bias from interest matching. Pay examples are labeled scenarios, with annual income examples and a practical next step.
 - Corrected insurance wording: renter's insurance can be required by a lease; it is not a general legal requirement. Standard policies generally exclude floods. Health coverage penalties and eligibility are not calculated.
+
+## Classroom learning flow
+
+The 13-step wizard now begins with an optional salary prediction. The first completed plan is retained automatically when the student reaches results, including for legacy progress files and the example. Later edits preserve that original for comparison. The overview keeps the monthly total and required wage prominent; the full comparison appears after a revision. The **My next step** page provides three short reflection fields and the original/current comparison.
+
+Optional panels record a real posting or teacher-provided job card, estimate starting cash and test changed paid hours. The posting form records the source and date checked; it does not fetch or verify a listing. Its wage calculation uses the entered hours and weeks, and benefits remain notes until budget choices are changed. No current listings are preloaded.
+
+Starting cash equals the current monthly plan plus entered setup costs, with an optional amount already set aside. Blank setup fields mean unknown, so all four fields (including zeros) must be entered before the estimate is complete. Setup extras never change the ongoing monthly plan. The separate hours challenge starts with 25% fewer hours and does not overwrite the selected wage. These inputs and the reflection round-trip through progress files and appear in the print summary. Older version-1 progress files still load.
+
+See [the classroom guide](docs/classroom-guide.md) for a short lesson sequence and job-card checklist. The guide revision date is November 5, 2026; original cost quote dates were not supplied. Updated official tax references were requested again during this release, but IRS and FTB connections were denied by the managed network proxy. The app continues to label the historical model accurately.
 
 ## Financial model and outstanding fact-check
 

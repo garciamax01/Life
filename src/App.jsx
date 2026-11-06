@@ -924,6 +924,29 @@ const EMPTY = {
   quizIndex: 0,
   quizAutoAdvance: true,
   resultView: "overview",
+  predictionSalary: null,
+  originalPlan: null,
+  jobTitle: "",
+  jobSource: "",
+  jobUrl: "",
+  jobReviewed: "",
+  jobPay: null,
+  jobPayBasis: "hourly",
+  jobHours: 40,
+  jobWeeks: 52,
+  jobSchedule: "assumed",
+  jobTraining: "",
+  jobBenefits: "",
+  startHousing: null,
+  startFurniture: null,
+  startMoving: null,
+  startVehicle: null,
+  startCashSaved: 0,
+  challengeHours: null,
+  challengeTried: false,
+  reflectionSurprise: "",
+  reflectionChange: "",
+  reflectionNext: "",
 };
 const DEMO = {
   ...EMPTY,
@@ -943,6 +966,7 @@ const DEMO = {
   kids: "none",
   savings: "s10",
   comparisonSalary: 50000,
+  predictionSalary: 40000,
 };
 const find = (list, id) => list.find((x) => x.id === id);
 const rented = (id) => ["studio", "1br", "2br", "house_r"].includes(id);
@@ -1230,6 +1254,143 @@ export function budget(a) {
   };
 }
 
+const GUIDE_REVISED = "November 5, 2026";
+const LEARNING_FIELDS = [
+  "originalPlan",
+  "jobTitle",
+  "jobSource",
+  "jobUrl",
+  "jobReviewed",
+  "jobPay",
+  "jobPayBasis",
+  "jobHours",
+  "jobWeeks",
+  "jobSchedule",
+  "jobTraining",
+  "jobBenefits",
+  "startHousing",
+  "startFurniture",
+  "startMoving",
+  "startVehicle",
+  "startCashSaved",
+  "challengeHours",
+  "challengeTried",
+  "reflectionSurprise",
+  "reflectionChange",
+  "reflectionNext",
+];
+const TEXT_LIMITS = {
+  name: 32,
+  comparisonCareer: 100,
+  jobTitle: 100,
+  jobSource: 160,
+  jobUrl: 1000,
+  jobReviewed: 10,
+  jobTraining: 300,
+  jobBenefits: 300,
+  reflectionSurprise: 280,
+  reflectionChange: 280,
+  reflectionNext: 280,
+};
+const localDate = () =>
+  new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+function validDate(value) {
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 10) === value
+  );
+}
+export function safeSourceUrl(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) &&
+      !url.username &&
+      !url.password
+      ? url.href
+      : "";
+  } catch {
+    return "";
+  }
+}
+export function captureOriginal(a) {
+  return Object.fromEntries(
+    Object.keys(EMPTY)
+      .filter((key) => !LEARNING_FIELDS.includes(key))
+      .map((key) => [
+        key,
+        Array.isArray(a[key] ?? EMPTY[key])
+          ? [...(a[key] ?? EMPTY[key])]
+          : (a[key] ?? EMPTY[key]),
+      ]),
+  );
+}
+export function startingCash(a) {
+  const keys = [
+    "startHousing",
+    "startFurniture",
+    "startMoving",
+    "startVehicle",
+  ];
+  const complete = keys.every((key) => a[key] !== null && a[key] !== undefined);
+  const extras = keys.reduce((sum, key) => sum + number(a[key], 1000000), 0);
+  const firstMonth = budget(a).total;
+  const total = firstMonth + extras;
+  return {
+    complete,
+    extras,
+    firstMonth,
+    total,
+    remaining: Math.max(0, total - number(a.startCashSaved, 1000000)),
+  };
+}
+export function postingEstimate(a) {
+  const salary =
+    a.jobPay === null || a.jobPay === undefined
+      ? null
+      : a.jobPayBasis === "annual"
+        ? a.jobPay
+        : Math.round(a.jobPay * a.jobHours * a.jobWeeks * 100) / 100;
+  const valid =
+    !!a.jobTitle?.trim() &&
+    !!a.jobSource?.trim() &&
+    validDate(a.jobReviewed || "") &&
+    a.jobReviewed <= localDate() &&
+    salary > 0 &&
+    salary <= 10000000 &&
+    (!a.jobUrl || !!safeSourceUrl(a.jobUrl));
+  return { salary, valid };
+}
+export function hoursChallenge(a) {
+  if (a.comparisonSalary === null || a.comparisonSalary === undefined)
+    return null;
+  const originalHours = a.comparisonHours || 40;
+  const hours =
+    a.challengeHours ?? Math.round(originalHours * 0.75 * 100) / 100;
+  const salary =
+    Math.round(((a.comparisonSalary * hours) / originalHours) * 100) / 100;
+  const b = budget(a),
+    available = takeHome(salary) / 12 + b.otherNet;
+  return {
+    hours,
+    salary,
+    available,
+    gap: available - b.total,
+    change: (takeHome(a.comparisonSalary) - takeHome(salary)) / 12,
+  };
+}
+function reflectionCount(a) {
+  return [a.reflectionSurprise, a.reflectionChange, a.reflectionNext].filter(
+    (text) => text?.trim(),
+  ).length;
+}
+
 export function matchCareers(answers, all = false) {
   const scores = { R: 0, I: 0, A: 0, S: 0, E: 0 };
   answers.forEach((code) => {
@@ -1276,6 +1437,8 @@ const PLAN_ENUMS = {
   kids: [null, ...KIDS.map((x) => x.id)],
   savings: [null, ...SAVES.map((x) => x.id)],
   budgetMode: ["personal", "household"],
+  jobPayBasis: ["hourly", "annual"],
+  jobSchedule: ["assumed", "stated"],
   hustleMode: ["net", "gross"],
   whatIfScenario: ["roommate", "family"],
   resultView: [
@@ -1285,6 +1448,7 @@ const PLAN_ENUMS = {
     "paycheck",
     "whatif",
     "sources",
+    "reflection",
   ],
 };
 const PLAN_ARRAYS = {
@@ -1321,7 +1485,29 @@ export function parseSavedPlan(text) {
   for (const key of Object.keys(EMPTY)) {
     if (!Object.hasOwn(raw, key)) continue;
     const value = raw[key];
-    if (PLAN_ENUMS[key]) {
+    if (key === "originalPlan") {
+      if (value === null) {
+        plan.originalPlan = null;
+        continue;
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        value.originalPlan != null
+      )
+        throw new Error("The original plan in this file is invalid.");
+      const restored = parseSavedPlan(
+        JSON.stringify({
+          format: "life-student-guide",
+          version: 1,
+          plan: value,
+        }),
+      ).plan;
+      if (!STEPS.every((_, i) => valid(i, restored)))
+        throw new Error("The original plan is incomplete.");
+      plan.originalPlan = captureOriginal(restored);
+    } else if (PLAN_ENUMS[key]) {
       if (!PLAN_ENUMS[key].includes(value))
         throw new Error("The progress file contains an unknown choice.");
       plan[key] = value;
@@ -1337,12 +1523,13 @@ export function parseSavedPlan(text) {
       if (typeof value !== "boolean")
         throw new Error("The progress file contains an invalid setting.");
       plan[key] = value;
-    } else if (key === "name" || key === "comparisonCareer") {
-      if (
-        typeof value !== "string" ||
-        value.length > (key === "name" ? 32 : 100)
-      )
+    } else if (TEXT_LIMITS[key]) {
+      if (typeof value !== "string" || value.length > TEXT_LIMITS[key])
         throw new Error("The progress file contains invalid text.");
+      if (key === "jobUrl" && value && !safeSourceUrl(value))
+        throw new Error("The job link must use http or https.");
+      if (key === "jobReviewed" && value && !validDate(value))
+        throw new Error("The job review date is invalid.");
       plan[key] = value;
     } else {
       if (value === null && EMPTY[key] === null) {
@@ -1358,19 +1545,32 @@ export function parseSavedPlan(text) {
                 "householdHomeShare",
               ].includes(key)
             ? 100
-            : key === "comparisonHours"
+            : ["comparisonHours", "jobHours", "challengeHours"].includes(key)
               ? 80
-              : key === "comparisonWeeks"
+              : ["comparisonWeeks", "jobWeeks"].includes(key)
                 ? 52
-                : ["comparisonSalary", "partnerSalary"].includes(key)
+                : [
+                      "comparisonSalary",
+                      "partnerSalary",
+                      "predictionSalary",
+                      "jobPay",
+                    ].includes(key)
                   ? 10000000
-                  : 100000;
+                  : key.startsWith("start")
+                    ? 1000000
+                    : 100000;
       if (
         typeof value !== "number" ||
         !Number.isFinite(value) ||
         value < 0 ||
         value > max ||
-        (["comparisonHours", "comparisonWeeks"].includes(key) && value < 1) ||
+        ([
+          "comparisonHours",
+          "comparisonWeeks",
+          "jobHours",
+          "jobWeeks",
+        ].includes(key) &&
+          value < 1) ||
         (key === "quizIndex" && !Number.isInteger(value))
       )
         throw new Error(
@@ -1894,6 +2094,32 @@ function AboutStep({ a, update }) {
           style={inputStyle}
         />
       </Field>
+      <div
+        style={{
+          background: C.lightBlue,
+          padding: 20,
+          borderRadius: 9,
+          marginBottom: 24,
+        }}
+      >
+        <Field
+          label="Your first guess: annual salary needed"
+          help={
+            a.originalPlan
+              ? "Your first guess is saved with your original plan. Compare it with your results."
+              : "Before researching, what yearly salary do you think would support the lifestyle you want? A guess is enough; you can leave it blank."
+          }
+        >
+          <AmountInput
+            value={a.predictionSalary}
+            allowBlank
+            max={10000000}
+            disabled={!!a.originalPlan}
+            onChange={(predictionSalary) => update({ predictionSalary })}
+            placeholder="Your guess, before taxes"
+          />
+        </Field>
+      </div>
       <BudgetScope a={a} update={update} />
       <Field label="Your grade">
         <select
@@ -3066,6 +3292,699 @@ function Spending({ b, small }) {
     </div>
   );
 }
+function DetailPanel({ title, hint, children, onToggle }) {
+  return (
+    <details
+      onToggle={onToggle}
+      style={{
+        border: `1px solid ${C.line}`,
+        borderRadius: 9,
+        marginTop: 16,
+        minWidth: 0,
+        background: "#fff",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          padding: "17px 20px",
+          fontSize: 17,
+          fontWeight: 700,
+          lineHeight: 1.5,
+        }}
+      >
+        {title}
+        {hint && (
+          <span
+            style={{
+              display: "block",
+              marginTop: 4,
+              fontSize: 12,
+              fontWeight: 400,
+              color: C.muted,
+            }}
+          >
+            {hint}
+          </span>
+        )}
+      </summary>
+      <div style={{ padding: "4px 20px 20px" }}>{children}</div>
+    </details>
+  );
+}
+function ShortAnswer({ label, value, onChange, help, max = 280 }) {
+  return (
+    <Field label={label} help={help}>
+      <textarea
+        maxLength={max}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={3}
+        style={{ ...inputStyle, resize: "vertical", minHeight: 80 }}
+      />
+      <span
+        style={{ display: "block", fontSize: 11, color: C.muted, marginTop: 4 }}
+      >
+        {value.length}/{max}
+      </span>
+    </Field>
+  );
+}
+function PredictionResult({ a, b }) {
+  const original = a.originalPlan ? budget(a.originalPlan) : b;
+  const guess = a.originalPlan
+    ? a.originalPlan.predictionSalary
+    : a.predictionSalary;
+  if (guess === null || guess === undefined)
+    return (
+      <p style={{ color: C.muted, fontSize: 13 }}>
+        Before discussing: how close was this to the salary you expected?
+      </p>
+    );
+  return (
+    <div
+      role="group"
+      aria-label="Prediction and first result"
+      style={{
+        display: "flex",
+        gap: "12px 28px",
+        flexWrap: "wrap",
+        padding: "16px 20px",
+        margin: "0 0 26px",
+        background: C.soft,
+        borderRadius: 8,
+        fontSize: 13,
+      }}
+    >
+      <span>
+        Your first guess: <strong>{fmt(guess)}/year</strong>
+      </span>
+      <span>
+        Your first plan needed: <strong>{fmt(original.salary)}/year</strong>
+      </span>
+      <span style={{ color: C.muted }}>
+        {Math.abs(original.salary - guess) < 1
+          ? "Your estimate matched the model."
+          : `${fmt(Math.abs(original.salary - guess))} ${original.salary > guess ? "above" : "below"} your guess.`}{" "}
+        What explains the difference?
+      </span>
+    </div>
+  );
+}
+function PlanComparison({ a, b, compactUntilChanged = false }) {
+  if (!a.originalPlan) return null;
+  const first = budget(a.originalPlan),
+    salary = a.comparisonSalary;
+  const rows = [
+    ["Monthly plan", first.total, b.total],
+    ["General savings / month", first.savings, b.savings],
+    ["Annual wages needed", first.salary, b.salary],
+  ];
+  const firstGap =
+    salary === null
+      ? null
+      : takeHome(salary) / 12 + first.otherNet - first.total;
+  const currentGap =
+    salary === null ? null : takeHome(salary) / 12 + b.otherNet - b.total;
+  if (salary !== null)
+    rows.push(["Left / short each month", firstGap, currentGap]);
+  const changed =
+    [
+      "housing",
+      "roommate",
+      "food",
+      "trans",
+      "health",
+      "savings",
+      "htype",
+      "kids",
+      "budgetMode",
+      "personalHomeShare",
+      "householdHomeShare",
+    ].some((key) => a[key] !== a.originalPlan[key]) ||
+    Math.abs(first.total - b.total) > 0.005;
+  if (compactUntilChanged && !changed)
+    return (
+      <section
+        aria-label="Original and current plan"
+        style={{ margin: "18px 0" }}
+      >
+        <Note>
+          Your first plan is saved. Use the edit buttons below to revise two
+          choices. Your original and current costs will appear together here.
+        </Note>
+      </section>
+    );
+  return (
+    <section
+      aria-label="Original and current plan"
+      style={{ margin: "20px 0" }}
+    >
+      <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}>
+        {changed
+          ? "Your first plan is saved. Compare the choices, then explain what changed and why."
+          : "Your first plan is saved. Try revising two choices; you can compare the full plans here."}
+      </p>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 13,
+          tableLayout: "fixed",
+        }}
+      >
+        <caption
+          style={{
+            textAlign: "left",
+            fontSize: 15,
+            fontWeight: 700,
+            paddingBottom: 12,
+          }}
+        >
+          Your original and current plans
+        </caption>
+        <thead>
+          <tr>
+            <th
+              scope="col"
+              style={{
+                width: "44%",
+                textAlign: "left",
+                padding: "10px 4px",
+                borderBottom: `1px solid ${C.line}`,
+              }}
+            >
+              Compare
+            </th>
+            <th
+              scope="col"
+              style={{
+                textAlign: "right",
+                padding: "10px 4px",
+                borderBottom: `1px solid ${C.line}`,
+              }}
+            >
+              Original
+            </th>
+            <th
+              scope="col"
+              style={{
+                textAlign: "right",
+                padding: "10px 4px",
+                borderBottom: `1px solid ${C.line}`,
+              }}
+            >
+              Current
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, before, after]) => (
+            <tr key={label}>
+              <th
+                scope="row"
+                style={{
+                  textAlign: "left",
+                  padding: "12px 4px",
+                  fontWeight: 500,
+                  color: C.muted,
+                  borderBottom: `1px solid ${C.line}`,
+                }}
+              >
+                {label}
+              </th>
+              <td
+                style={{
+                  textAlign: "right",
+                  padding: "12px 4px",
+                  borderBottom: `1px solid ${C.line}`,
+                }}
+              >
+                {fmt(before)}
+              </td>
+              <td
+                style={{
+                  textAlign: "right",
+                  padding: "12px 4px",
+                  fontWeight: 700,
+                  borderBottom: `1px solid ${C.line}`,
+                }}
+              >
+                {fmt(after)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {salary !== null && (
+        <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+          Both use your selected {fmt(salary)}/year main wage and each plan's
+          own other income. A negative amount means a shortfall. General savings
+          is the dollar target set by each plan.
+        </p>
+      )}
+      {first.household !== b.household && (
+        <Note tone="amber">
+          You changed between your share and a household total. These plans
+          cover different people, so the change is not just a saving or an
+          increase in your lifestyle cost.
+        </Note>
+      )}
+    </section>
+  );
+}
+function JobPosting({ a, update, small, onSalary, onEdit }) {
+  const estimate = postingEstimate(a);
+  return (
+    <DetailPanel
+      title="Use a real job posting"
+      hint={
+        a.jobTitle
+          ? `${a.jobTitle} · ${a.jobReviewed || "add the date checked"}`
+          : "Add a local employer posting or a job card from your teacher."
+      }
+    >
+      <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}>
+        Copy the pay and schedule from one posting. Record the source and when
+        you checked it. Nothing is sent to the employer or uploaded.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: small
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1fr) minmax(0, 1fr)",
+          gap: "0 20px",
+        }}
+      >
+        <Field label="Job title">
+          <input
+            value={a.jobTitle}
+            maxLength={100}
+            onChange={(e) => update({ jobTitle: e.target.value })}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="Employer or teacher-provided source">
+          <input
+            value={a.jobSource}
+            maxLength={160}
+            onChange={(e) => update({ jobSource: e.target.value })}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="Posting link (optional)">
+          <input
+            type="url"
+            value={a.jobUrl}
+            maxLength={1000}
+            placeholder="https://"
+            onChange={(e) => {
+              const value = e.target.value;
+              e.target.setCustomValidity(
+                !value || safeSourceUrl(value)
+                  ? ""
+                  : "Use an http or https link without login credentials.",
+              );
+              update({ jobUrl: value });
+            }}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="Date you checked the posting">
+          <input
+            type="date"
+            max={localDate()}
+            value={a.jobReviewed}
+            onChange={(e) => update({ jobReviewed: e.target.value })}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="Pay listed in the posting">
+          <AmountInput
+            value={a.jobPay}
+            allowBlank
+            max={
+              a.jobPayBasis === "hourly"
+                ? Math.floor((10000000 / (a.jobHours * a.jobWeeks)) * 100) / 100
+                : 10000000
+            }
+            onChange={(jobPay) => update({ jobPay })}
+          />
+        </Field>
+        <Field label="Pay is listed per">
+          <select
+            value={a.jobPayBasis}
+            onChange={(e) => update({ jobPayBasis: e.target.value })}
+            style={inputStyle}
+          >
+            <option value="hourly">Hour</option>
+            <option value="annual">Year</option>
+          </select>
+        </Field>
+        <Field label="Job's paid hours per week">
+          <AmountInput
+            min={1}
+            max={80}
+            value={a.jobHours}
+            onChange={(jobHours) => update({ jobHours })}
+          />
+        </Field>
+        <Field label="Job's paid weeks per year">
+          <AmountInput
+            min={1}
+            max={52}
+            value={a.jobWeeks}
+            onChange={(jobWeeks) => update({ jobWeeks })}
+          />
+        </Field>
+      </div>
+      <Field label="Where did this schedule come from?">
+        <select
+          style={inputStyle}
+          value={a.jobSchedule}
+          onChange={(e) => update({ jobSchedule: e.target.value })}
+        >
+          <option value="assumed">Assumed schedule</option>
+          <option value="stated">Stated in posting</option>
+        </select>
+      </Field>
+      {a.jobSchedule === "assumed" && (
+        <Note tone="amber">
+          The schedule is an assumption. Ask about reliable paid hours, unpaid
+          time and shift availability before relying on this annual income.
+        </Note>
+      )}
+      <div style={{ marginTop: 20 }}>
+        <ShortAnswer
+          label="Training or credential required (optional)"
+          value={a.jobTraining}
+          max={300}
+          onChange={(jobTraining) => update({ jobTraining })}
+          help="Record the requirement, approximate training time or cost, or what you still need to find out."
+        />
+        <ShortAnswer
+          label="Benefits and eligibility (optional)"
+          value={a.jobBenefits}
+          max={300}
+          onChange={(jobBenefits) => update({ jobBenefits })}
+          help="Check health coverage, employee premiums, waiting periods and whether your schedule qualifies."
+        />
+      </div>
+      {estimate.salary !== null && (
+        <p style={{ fontSize: 15, fontWeight: 700 }}>
+          Wage to test: {fmt(estimate.salary)}/year before taxes
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Button
+          primary
+          disabled={!estimate.valid}
+          onClick={() =>
+            visibleFieldsValid() &&
+            onSalary(estimate.salary, a.jobTitle, {
+              comparisonHours: a.jobHours,
+              comparisonWeeks: a.jobWeeks,
+            })
+          }
+        >
+          Test this posting
+        </Button>
+        {onEdit && (
+          <Button onClick={() => onEdit(6)}>Check my healthcare choice</Button>
+        )}
+        {safeSourceUrl(a.jobUrl) && (
+          <a
+            href={safeSourceUrl(a.jobUrl)}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: C.blue, padding: "12px 0", fontSize: 13 }}
+          >
+            Open recorded posting
+          </a>
+        )}
+      </div>
+      <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.7 }}>
+        Add a title, source, checked date and positive pay to test this posting.
+        Benefits stay as notes until you update your budget. Commission income,
+        tips, overtime premiums and self-employment require additional
+        assumptions.
+      </p>
+    </DetailPanel>
+  );
+}
+function StartingCash({ a, b, update, small }) {
+  const cash = startingCash(a);
+  return (
+    <DetailPanel
+      title="Cash needed to get started"
+      hint={
+        cash.complete
+          ? `${fmt(cash.total)} for the first month and setup`
+          : "Estimate deposits, basic setup and initial transportation costs."
+      }
+    >
+      <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}>
+        Start with your first month's {fmt(b.total)} plan, then add costs paid
+        at the beginning. Enter 0 where a cost does not apply. Review these
+        amounts if your housing or transportation changes.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: small
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1fr) minmax(0, 1fr)",
+          gap: "0 20px",
+        }}
+      >
+        {[
+          [
+            "startHousing",
+            "Housing deposit or home purchase cash",
+            "Use an actual rental deposit, or the down payment and closing costs for a home. First-month housing is already in the monthly plan.",
+          ],
+          [
+            "startFurniture",
+            "Basic furnishings and household supplies",
+            "Enter the amount you would pay to get set up.",
+          ],
+          [
+            "startMoving",
+            "Moving and utility setup fees",
+            "Include connection fees or deposits if they apply.",
+          ],
+          [
+            "startVehicle",
+            "Transportation purchase or down payment",
+            "Include initial cash for a vehicle if needed. Ongoing payments and running costs are already in the monthly plan.",
+          ],
+        ].map(([key, label, help]) => (
+          <Field key={key} label={label} help={help}>
+            <AmountInput
+              allowBlank
+              max={1000000}
+              value={a[key]}
+              onChange={(value) => update({ [key]: value })}
+              placeholder="Enter an estimate or 0"
+            />
+          </Field>
+        ))}
+      </div>
+      <Field
+        label="Money already set aside (optional)"
+        help="Use a planning amount. You do not need to share your actual savings."
+      >
+        <AmountInput
+          max={1000000}
+          value={a.startCashSaved}
+          onChange={(startCashSaved) => update({ startCashSaved })}
+        />
+      </Field>
+      <div
+        aria-live="polite"
+        style={{
+          padding: 20,
+          background: C.soft,
+          borderRadius: 8,
+          lineHeight: 1.9,
+          fontSize: 14,
+        }}
+      >
+        <div>
+          First month of your plan: <strong>{fmt(cash.firstMonth)}</strong>
+        </div>
+        <div>
+          Setup extras entered: <strong>{fmt(cash.extras)}</strong>
+        </div>
+        {cash.complete ? (
+          <>
+            <div>
+              First month + setup: <strong>{fmt(cash.total)}</strong>
+            </div>
+            <div>
+              Still to set aside: <strong>{fmt(cash.remaining)}</strong>
+            </div>
+          </>
+        ) : (
+          <p style={{ color: C.muted, marginBottom: 0 }}>
+            Fill all four setup amounts, including any zeros, to complete the
+            estimate.
+          </p>
+        )}
+      </div>
+      <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.7 }}>
+        This is a cash target for the first month and setup. Your first month's
+        income may cover part of it. Deposits may be refundable. Setup extras
+        are separate from ongoing monthly expenses.
+      </p>
+    </DetailPanel>
+  );
+}
+function Challenge({ a, b, update, onView, onEdit }) {
+  const challenge = hoursChallenge(a);
+  return (
+    <DetailPanel
+      title="Try an hours-change challenge"
+      hint="What if your job offers fewer paid hours than you expected?"
+      onToggle={(event) => {
+        if (event.currentTarget.open && !a.challengeTried)
+          update({ challengeTried: true });
+      }}
+    >
+      {!challenge ? (
+        <>
+          <p style={{ color: C.muted, fontSize: 13 }}>
+            Choose a wage and schedule first, then test a change without
+            overwriting them.
+          </p>
+          <Button onClick={() => onView("paycheck")}>Choose a wage</Button>
+        </>
+      ) : (
+        <>
+          <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}>
+            Your current comparison uses {a.comparisonHours} paid hours per
+            week. Start with 25% fewer hours, or enter a different schedule
+            below. This scenario assumes pay changes with hours; weeks and other
+            income stay the same.
+          </p>
+          <Field label="Challenge: paid hours per week">
+            <AmountInput
+              max={80}
+              value={challenge.hours}
+              onChange={(challengeHours) =>
+                update({ challengeHours, challengeTried: true })
+              }
+            />
+          </Field>
+          <div
+            aria-live="polite"
+            style={{
+              padding: 20,
+              background: C.soft,
+              borderRadius: 8,
+              fontSize: 14,
+              lineHeight: 1.9,
+            }}
+          >
+            <div>
+              Annual wages in this scenario:{" "}
+              <strong>{fmt(challenge.salary)}</strong>
+            </div>
+            <div>
+              Available each month: <strong>{fmt(challenge.available)}</strong>
+            </div>
+            <div>
+              {challenge.gap < 0 ? "Monthly shortfall" : "Left after your plan"}
+              :{" "}
+              <strong style={{ color: challenge.gap < 0 ? C.amber : C.green }}>
+                {fmt(Math.abs(challenge.gap))}
+              </strong>
+            </div>
+          </div>
+          <p style={{ fontSize: 13, lineHeight: 1.7 }}>
+            Which two choices would you revisit? Could you still get to the
+            shift using your selected transportation? If you support children,
+            does the care schedule work?
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            <Button onClick={() => onEdit(5)}>Review transportation</Button>
+            <Button onClick={() => onEdit(11)}>Review household</Button>
+          </div>
+          <p style={{ color: C.muted, fontSize: 12 }}>
+            Your selected wage stays unchanged. This challenge is a separate
+            discussion scenario.
+          </p>
+        </>
+      )}
+    </DetailPanel>
+  );
+}
+function ReflectionPage({ a, b, update, small, onPrint, onView, onEdit }) {
+  return (
+    <>
+      <PageTitle
+        eyebrowText="Explain your choices"
+        title="Turn your numbers into a next step."
+        body="A few sentences are enough. Explain what surprised you, a choice you would revise, and something you can do now."
+      />
+      <PredictionResult a={a} b={b} />
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: small
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1.25fr) minmax(0, 1fr)",
+          gap: small ? 28 : 44,
+        }}
+      >
+        <section aria-label="My reflection">
+          <ShortAnswer
+            label="The expense that surprised me most was…"
+            value={a.reflectionSurprise}
+            onChange={(reflectionSurprise) => update({ reflectionSurprise })}
+          />
+          <ShortAnswer
+            label="The choice I would change is… because…"
+            value={a.reflectionChange}
+            onChange={(reflectionChange) => update({ reflectionChange })}
+          />
+          <ShortAnswer
+            label="One step I can take now is…"
+            value={a.reflectionNext}
+            onChange={(reflectionNext) => update({ reflectionNext })}
+            help="For example: research a credential, check a local job's requirements, or set a savings goal."
+          />
+          <p role="status" style={{ color: C.muted, fontSize: 12 }}>
+            {reflectionCount(a)} of 3 reflections written. Your explanation and
+            next step matter more than choosing the cheapest lifestyle.
+          </p>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Button primary onClick={onPrint}>
+              Print my summary
+            </Button>
+            <Button onClick={() => onView("overview")}>Review my plan</Button>
+          </div>
+          <p style={{ color: C.muted, fontSize: 12 }}>
+            Use Save progress to keep your answers in a file. The print summary
+            includes your reflection.
+          </p>
+        </section>
+        <aside>
+          <PlanComparison a={a} b={b} />
+          <Challenge
+            a={a}
+            b={b}
+            update={update}
+            onView={onView}
+            onEdit={onEdit}
+          />
+        </aside>
+      </div>
+    </>
+  );
+}
+
 function Overview({
   a,
   b,
@@ -3076,6 +3995,7 @@ function Overview({
   salary,
   setSalary,
   onEdit,
+  update,
 }) {
   const available = salary === null ? null : takeHome(salary) / 12 + b.otherNet;
   const gap = available === null ? null : b.total - available;
@@ -3193,6 +4113,9 @@ function Overview({
           </Button>
         </section>
       </div>
+      <div style={{ marginTop: 24 }}>
+        <PredictionResult a={a} b={b} />
+      </div>
       {small && (
         <div style={{ marginTop: 24 }}>
           <Spending b={b} small />
@@ -3234,9 +4157,14 @@ function Overview({
                 onChange={setSalary}
               />
             </Field>
-            <Button onClick={() => onView("paycheck")}>
-              Explore the paycheck and hourly pay
-            </Button>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <Button onClick={() => onView("paycheck")}>
+                Explore the paycheck and hourly pay
+              </Button>
+              <Button onClick={() => onView("careers")}>
+                Use a real job posting
+              </Button>
+            </div>
           </div>
           <div
             aria-live="polite"
@@ -3295,7 +4223,10 @@ function Overview({
           paddingTop: 24,
         }}
       >
-        <h2 style={{ fontSize: 20 }}>Make one change, then compare</h2>
+        <h2 style={{ fontSize: 20 }}>
+          Keep your goal. Try a workable first step.
+        </h2>
+        <PlanComparison a={a} b={b} compactUntilChanged />
         <p style={{ color: C.muted, fontSize: 13 }}>
           {biggest?.name} is your largest spending category at{" "}
           {fmt(biggest?.amount || 0)}/month. Which choices are priorities, and
@@ -3318,6 +4249,25 @@ function Overview({
           </Button>
         </div>
       </section>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: small
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1fr) minmax(0, 1fr)",
+          gap: "0 20px",
+          marginTop: 20,
+        }}
+      >
+        <StartingCash a={a} b={b} update={update} small={small} />
+        <Challenge
+          a={a}
+          b={b}
+          update={update}
+          onView={onView}
+          onEdit={onEdit}
+        />
+      </div>
       <section
         style={{
           marginTop: 28,
@@ -3327,18 +4277,23 @@ function Overview({
       >
         <h2 style={{ fontSize: 20 }}>What would you change first, and why?</h2>
         <p style={{ color: C.muted, fontSize: 13 }}>
-          Compare the lifestyle you want with the wages you are considering.
-          What surprised you? What training, hours or choices would make your
-          plan possible?
+          Finish with three short thoughts: what surprised you, a change you
+          would make, and your next step.
         </p>
-        <Button onClick={onPrint}>Print my summary</Button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Button primary onClick={() => onView("reflection")}>
+            Write my next step
+          </Button>
+          <Button onClick={onPrint}>Print my summary</Button>
+        </div>
       </section>
       <p
         style={{ color: C.muted, fontSize: 12, lineHeight: 1.8, marginTop: 24 }}
       >
-        Perris / Inland Empire classroom planning estimates. Actual prices,
-        wages and situations vary. Taxes use a historical 2024 single-filer
-        model before credits and benefits.{" "}
+        Guide revised {GUIDE_REVISED}. Perris / Inland Empire classroom planning
+        estimates; original quote dates were not supplied. Actual prices, wages
+        and situations vary. Taxes use a historical 2024 single-filer model
+        before credits and benefits.{" "}
         <button
           onClick={() => onView("sources")}
           style={{
@@ -3592,7 +4547,7 @@ function BudgetPage({ a, b, small }) {
     </>
   );
 }
-function CareersPage({ a, b, small, onSalary }) {
+function CareersPage({ a, b, small, onSalary, update, onEdit }) {
   const [browseAll, setBrowseAll] = useState(false);
   const careers = matchCareers(a.pers, browseAll);
   return (
@@ -3601,6 +4556,13 @@ function CareersPage({ a, b, small, onSalary }) {
         eyebrowText="Possibilities, not predictions"
         title="Find a direction worth exploring."
         body="Explore paths connected with your interests, or browse every path. Pay figures are scenarios for comparison; actual job offers, training requirements and earnings vary."
+      />
+      <JobPosting
+        a={a}
+        update={update}
+        small={small}
+        onSalary={onSalary}
+        onEdit={onEdit}
       />
       <Note style={{ boxSizing: "border-box", marginBottom: 28 }}>
         Your plan needs about {fmt(b.salary)} in annual wages
@@ -3875,7 +4837,7 @@ function PaycheckPage({ a, b, salary, setSalary, update, small }) {
       <PageTitle
         eyebrowText="From gross to take-home"
         title="What could your paycheck cover?"
-        body="Enter an annual wage or convert an hourly offer. See a simplified monthly paystub and compare it with the life you planned."
+        body="Enter an annual wage or convert an hourly offer. See a simplified monthly paystub and compare it with the life you planned. You can record a real posting on the Careers page."
       />
       <div
         style={{
@@ -3937,6 +4899,31 @@ function PaycheckPage({ a, b, salary, setSalary, update, small }) {
             <p style={{ color: C.muted, fontSize: 13 }}>
               Selected scenario: {a.comparisonCareer}
             </p>
+          )}
+          {a.jobTitle && a.comparisonCareer === a.jobTitle && (
+            <Note style={{ marginBottom: 16 }}>
+              Recorded posting: <strong>{a.jobTitle}</strong>, {a.jobSource}.
+              Checked {a.jobReviewed}. The {a.jobHours}-hour, {a.jobWeeks}-week
+              schedule is{" "}
+              {a.jobSchedule === "stated"
+                ? "stated in the posting"
+                : "an assumption to verify"}
+              .
+              {safeSourceUrl(a.jobUrl) && (
+                <>
+                  {" "}
+                  <a
+                    href={safeSourceUrl(a.jobUrl)}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: C.blue }}
+                  >
+                    Open posting
+                  </a>
+                  .
+                </>
+              )}
+            </Note>
           )}
           <Note>
             Health premiums in your plan remain a budget expense here; they are
@@ -4406,7 +5393,7 @@ function SourcesPage() {
       <PageTitle
         eyebrowText="Read the fine print, in plain language"
         title="Useful estimates. Visible assumptions."
-        body="This is a classroom conversation starter, not a current cost-of-living database, a benefits determination, an insurance quote, or tax advice."
+        body={`Guide revised ${GUIDE_REVISED}. Local cost presets are classroom estimates; their individual quote dates were not supplied. Real job records include the source and date checked by the student.`}
       />
       <div style={{ boxSizing: "border-box", maxWidth: 850 }}>
         {[
@@ -4431,12 +5418,16 @@ function SourcesPage() {
             "The six-question activity is not a validated assessment. It omits the Conventional category of the full Holland framework. Matching uses your interest answers only, not salary or assumptions about your academic ability. Pay examples are scenarios, not verified entry-level or experienced wages. There are no success probabilities, guaranteed job placements, or guaranteed raises. Combined titles may cover several BLS occupations.",
           ],
           [
+            "Original plans, setup cash and challenges stay separate.",
+            "Your first completed plan is retained for comparison when you edit your choices. Both plans use the same current classroom cost and tax model. Starting cash is the first month's plan plus the setup amounts you enter, not another monthly expense. All four setup amounts, including zeros, must be entered to complete that estimate. The hours-change challenge assumes pay changes in proportion to paid hours and does not overwrite your selected wage. Your reflection and full job notes are included in progress files.",
+          ],
+          [
             "Some large real-life costs are outside the monthly plan.",
-            "Moving deposits, emergency medical bills, benefit eligibility changes, home closing costs, parking, tolls, and unpaid time are not automatically added. Savings set aside for repairs or other goals can overlap if you select multiple reserves. Read the selected line items, then compare the result with the details of your own situation.",
+            "The setup panel can include deposits, moving fees and home or vehicle purchase cash when you enter them. Emergency medical bills, benefit eligibility changes, parking, tolls, and unpaid time are not automatically added. Savings set aside for repairs or other goals can overlap if you select multiple reserves. Read the selected line items, then compare the result with the details of your own situation.",
           ],
           [
             "Your answers stay in this tab.",
-            "There is no account or upload of your answers. Refreshing or closing the tab clears the plan. Save progress downloads a JSON file with your name or nickname, choices and comparison inputs. Open progress restores it later on this or another device. Keep that file somewhere appropriate, especially on a shared school computer. A nickname is enough. You can also print a discussion summary.",
+            "There is no account or upload of your answers. Refreshing or closing the tab clears the plan. Save progress downloads a JSON file with your name or nickname, original and current plans, job notes, estimates, comparison inputs and reflection. Open progress restores it later on this or another device. Keep that file somewhere appropriate, especially on a shared school computer. A nickname is enough. You can also print a discussion summary.",
           ],
         ].map(([title, body]) => (
           <section
@@ -4517,128 +5508,165 @@ function SourcesPage() {
 }
 
 function PrintSummary({ a, b, salary }) {
-  const matches = matchCareers(a.pers),
-    gap = takeHome(salary) / 12 + b.otherNet - b.total;
+  const first = a.originalPlan ? budget(a.originalPlan) : b;
+  const guess = a.originalPlan
+    ? a.originalPlan.predictionSalary
+    : a.predictionSalary;
+  const cash = startingCash(a),
+    challenge = a.challengeTried ? hoursChallenge(a) : null;
+  const gap =
+    salary === null ? null : takeHome(salary) / 12 + b.otherNet - b.total;
+  const title = { fontSize: 12, margin: "12px 0 6px", fontWeight: 750 };
+  const cell = {
+    padding: "6px 4px",
+    borderBottom: `1px solid ${C.line}`,
+    textAlign: "right",
+  };
+  const removed = [
+    rented(a.housing) && a.rOut && "renter's insurance",
+    find(HOUSING, a.housing)?.ins === "homeowners" &&
+      a.hOut &&
+      "homeowner's insurance",
+    find(TRANS, a.trans)?.car && a.ciOut && "car insurance",
+    find(TRANS, a.trans)?.car && a.crOut && "registration",
+    a.hlOut && "health coverage",
+  ].filter(Boolean);
   return (
     <article
       style={{
         boxSizing: "border-box",
         fontFamily: "system-ui,sans-serif",
-        color: "#101b32",
+        color: C.ink,
         background: "#fff",
-        fontSize: 11,
+        fontSize: 10,
+        lineHeight: 1.45,
         maxWidth: 710,
         margin: "0 auto",
         padding: 15,
-        lineHeight: 1.5,
+        overflowWrap: "anywhere",
       }}
     >
-      <div style={{ boxSizing: "border-box", ...eyebrow, fontSize: 9 }}>
+      <div style={{ ...eyebrow, fontSize: 9 }}>
         What Will Your Life Cost? · A student guide
       </div>
-      <h1
-        style={{
-          boxSizing: "border-box",
-          fontSize: 29,
-          letterSpacing: -1,
-          margin: "12px 0 5px",
-        }}
-      >
+      <h1 style={{ fontSize: 26, letterSpacing: -0.8, margin: "9px 0 3px" }}>
         {a.name}'s next chapter
       </h1>
-      <p
-        style={{ boxSizing: "border-box", margin: "0 0 20px", color: C.muted }}
-      >
-        A snapshot of a possible future, not a prediction. Grade {a.grade} ·{" "}
+      <p style={{ margin: "0 0 12px", color: C.muted }}>
+        Grade {a.grade} ·{" "}
         {new Date().toLocaleDateString("en-US", {
           timeZone: "America/Los_Angeles",
-        })}
+        })}{" "}
+        · {b.scopeLabel}. A possible future, not a prediction.
       </p>
       <div
         style={{
-          boxSizing: "border-box",
           display: "grid",
           gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 20,
+          gap: 15,
           borderTop: `2px solid ${C.ink}`,
           borderBottom: `1px solid ${C.line}`,
-          padding: "16px 0",
+          padding: "12px 0",
         }}
       >
         {[
-          [b.scopeLabel, fmt(b.total)],
-          ["Annual wages needed", fmt(b.salary)],
-          ["Hourly equivalent", hourly(b.salary / 2080)],
+          ["Monthly plan", fmt(b.total)],
+          ["Your annual wages needed", fmt(b.salary)],
+          ["At 40 hours × 52 weeks", `${hourly(b.salary / 2080)}/hour`],
         ].map(([label, value]) => (
           <div key={label}>
-            <div
-              style={{ boxSizing: "border-box", fontSize: 10, color: C.muted }}
-            >
-              {label}
-            </div>
-            <strong
-              style={{
-                boxSizing: "border-box",
-                fontSize: 23,
-                letterSpacing: -0.8,
-              }}
-            >
+            <div style={{ color: C.muted, fontSize: 9 }}>{label}</div>
+            <strong style={{ fontSize: 21, letterSpacing: -0.6 }}>
               {value}
             </strong>
           </div>
         ))}
       </div>
-      <div
-        style={{
-          boxSizing: "border-box",
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 35,
-          marginTop: 22,
-        }}
+      <p style={{ margin: "9px 0" }}>
+        {guess === null || guess === undefined
+          ? "My first salary prediction was not recorded."
+          : `I first guessed ${fmt(guess)}/year. My original plan needed ${fmt(first.salary)}/year.`}
+      </p>
+      <table
+        style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}
       >
+        <caption style={{ textAlign: "left", ...title }}>
+          Original and current plans
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col" style={{ ...cell, textAlign: "left" }}>
+              Compare
+            </th>
+            <th scope="col" style={cell}>
+              Original
+            </th>
+            <th scope="col" style={cell}>
+              Current
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {[
+            ["Monthly plan", first.total, b.total],
+            ["General savings / month", first.savings, b.savings],
+            ["Your annual wages needed", first.salary, b.salary],
+          ].map(([label, before, after]) => (
+            <tr key={label}>
+              <th
+                scope="row"
+                style={{ ...cell, textAlign: "left", fontWeight: 500 }}
+              >
+                {label}
+              </th>
+              <td style={cell}>{fmt(before)}</td>
+              <td style={cell}>{fmt(after)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {first.household !== b.household && (
+        <p>
+          The scope changed between a personal share and a household total. The
+          plans cover different people.
+        </p>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28 }}>
         <section>
-          <h2 style={{ boxSizing: "border-box", fontSize: 15 }}>
-            My monthly plan
-          </h2>
-          {GROUPS.map((g, i) => (
+          <h2 style={title}>My monthly plan</h2>
+          {GROUPS.map((group, i) => (
             <div
-              key={g.name}
+              key={group.name}
               style={{
-                boxSizing: "border-box",
                 display: "flex",
                 justifyContent: "space-between",
-                padding: "6px 0",
+                gap: 12,
+                padding: "4px 0",
                 borderBottom: `1px solid ${C.line}`,
               }}
             >
-              <span>{g.name}</span>
+              <span>{group.name}</span>
               <strong>{fmt(b.groups[i])}</strong>
             </div>
           ))}
-          <p>
-            Includes a {Math.round(b.rate * 100)}% savings target.
-            {b.sideNet > 0 &&
-              ` Assumes ${fmt(b.sideNet)}/month net side income.`}
-            {b.partnerNet > 0 &&
-              ` Assumes ${fmt(b.partnerNet)}/month other adult take-home.`}
+          <p style={{ marginBottom: 0 }}>
+            General savings target: {Math.round(b.rate * 100)}% at required
+            income.
+            {b.sideNet > 0 ? ` Net side income: ${fmt(b.sideNet)}/month.` : ""}
+            {b.partnerNet > 0
+              ? ` Other adult's estimated take-home: ${fmt(b.partnerNet)}/month.`
+              : ""}
           </p>
         </section>
         <section>
-          <h2 style={{ boxSizing: "border-box", fontSize: 15 }}>
-            My biggest choices
-          </h2>
-          <p>
+          <h2 style={title}>My biggest choices</h2>
+          <p style={{ marginTop: 0 }}>
             Housing: {find(HOUSING, a.housing)?.l}
-            {a.roommate ? ", with one roommate" : ""}
+            {a.roommate ? ", with a roommate" : ""}
             <br />
-            Food: {find(FOOD, a.food)?.l}
+            Transportation: {find(TRANS, a.trans)?.l}
             <br />
-            Transport: {find(TRANS, a.trans)?.l}
-            <br />
-            Household: {find(HTYPE, a.htype)?.l}
-            <br />
-            Children: {find(KIDS, a.kids)?.l}
+            Household: {find(HTYPE, a.htype)?.l}; {find(KIDS, a.kids)?.l}
             <br />
             Student loans:{" "}
             {fmt(["trade", "cc", "4year"].includes(a.plan) ? a.loan : 0)}{" "}
@@ -4649,119 +5677,97 @@ function PrintSummary({ a, b, salary }) {
           </p>
         </section>
       </div>
-      <section
-        style={{
-          boxSizing: "border-box",
-          borderTop: `1px solid ${C.line}`,
-          padding: "10px 0",
-          marginTop: 10,
-          breakInside: "avoid",
-        }}
-      >
-        <h2 style={{ boxSizing: "border-box", fontSize: 15 }}>
-          My starting-pay reality check
-        </h2>
-        <p>
-          {salary === null ? (
-            "No comparison wage selected yet. Choose a wage in the app to test it against the plan."
-          ) : (
-            <>
-              {a.comparisonCareer && `${a.comparisonCareer}: `}At {fmt(salary)}
-              /year gross wages, estimated monthly take-home is{" "}
-              {fmt(takeHome(salary) / 12)}
-              {b.otherNet > 0
-                ? `, plus ${fmt(b.otherNet)} other net monthly income`
-                : ""}
-              . That leaves a {fmt(Math.abs(gap))} monthly{" "}
-              {gap < 0 ? "gap" : "surplus"} compared with my plan.
-            </>
-          )}
+      <section style={{ borderTop: `1px solid ${C.line}`, marginTop: 12 }}>
+        <h2 style={title}>My wage check</h2>
+        <p style={{ margin: "0 0 8px" }}>
+          {salary === null
+            ? "No comparison wage selected yet."
+            : `${a.comparisonCareer ? a.comparisonCareer + ": " : ""}${fmt(salary)}/year gross at ${a.comparisonHours} paid hours/week × ${a.comparisonWeeks} weeks. Estimated take-home: ${fmt(takeHome(salary) / 12)}/month${b.otherNet > 0 ? ` plus ${fmt(b.otherNet)} other net income` : ""}. ${fmt(Math.abs(gap))}/month ${gap < 0 ? "shortfall" : "left after the plan"}.`}
         </p>
-      </section>
-      <section
-        style={{
-          boxSizing: "border-box",
-          borderTop: `1px solid ${C.line}`,
-          padding: "10px 0",
-          breakInside: "avoid",
-        }}
-      >
-        <h2 style={{ boxSizing: "border-box", fontSize: 15 }}>
-          Three directions to explore
-        </h2>
-        {matches.slice(0, 3).map((c) => (
-          <p key={c.title} style={{ boxSizing: "border-box", margin: "7px 0" }}>
-            <strong>{c.title}: </strong>
-            {c.first}
+        {a.jobTitle && (
+          <p style={{ margin: "0 0 8px" }}>
+            Recorded job: <strong>{a.jobTitle}</strong>,{" "}
+            {a.jobSource || "source not recorded"}. Checked:{" "}
+            {a.jobReviewed || "date not recorded"}. Schedule:{" "}
+            {a.jobSchedule === "stated" ? "stated in posting" : "assumed"}.
+            {safeSourceUrl(a.jobUrl) && (
+              <>
+                {" "}
+                <a href={safeSourceUrl(a.jobUrl)} style={{ color: C.blue }}>
+                  Recorded posting
+                </a>
+                .
+              </>
+            )}
+            {a.jobTraining && ` Training: ${a.jobTraining}`}
+            {a.jobBenefits && ` Benefits to check: ${a.jobBenefits}`}
           </p>
+        )}
+        {cash.complete && (
+          <p style={{ margin: "0 0 8px" }}>
+            Starting cash: <strong>{fmt(cash.total)}</strong> for the first
+            month and setup, including {fmt(cash.extras)} in setup extras.{" "}
+            {fmt(cash.remaining)} still to set aside after the planning amount
+            entered. These extras are separate from the ongoing monthly plan.
+          </p>
+        )}
+        {!cash.complete && (cash.extras > 0 || a.startCashSaved > 0) && (
+          <p>
+            Starting-cash estimate is incomplete. Setup extras entered so far:{" "}
+            {fmt(cash.extras)}.
+          </p>
+        )}
+        {challenge && (
+          <p style={{ margin: "0 0 8px" }}>
+            Hours-change discussion: {challenge.hours} hours/week,{" "}
+            {fmt(challenge.salary)}/year gross. {fmt(Math.abs(challenge.gap))}
+            /month {challenge.gap < 0 ? "shortfall" : "left"} against the
+            current plan. This is a separate scenario.
+          </p>
+        )}
+      </section>
+      <section style={{ borderTop: `1px solid ${C.line}`, paddingTop: 3 }}>
+        {[
+          ["The expense that surprised me most was…", a.reflectionSurprise],
+          ["The choice I would change is… because…", a.reflectionChange],
+          ["One step I can take now is…", a.reflectionNext],
+        ].map(([label, answer]) => (
+          <div key={label} style={{ breakInside: "avoid" }}>
+            <h2 style={title}>{label}</h2>
+            {answer.trim() ? (
+              <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap" }}>
+                {answer}
+              </p>
+            ) : (
+              <div
+                style={{ height: 22, borderBottom: `1px solid ${C.line}` }}
+              />
+            )}
+          </div>
         ))}
       </section>
-      <section
-        style={{
-          boxSizing: "border-box",
-          borderTop: `1px solid ${C.line}`,
-          paddingTop: 12,
-          breakInside: "avoid",
-        }}
-      >
-        <h2 style={{ boxSizing: "border-box", fontSize: 15 }}>
-          What would I change first, and why?
-        </h2>
-        <p
-          style={{
-            boxSizing: "border-box",
-            borderBottom: `1px solid ${C.line}`,
-            height: 32,
-          }}
-        />
-        <p
-          style={{
-            boxSizing: "border-box",
-            borderBottom: `1px solid ${C.line}`,
-            height: 22,
-          }}
-        />
-      </section>
-      <p
-        style={{
-          boxSizing: "border-box",
-          fontSize: 9,
-          color: C.muted,
-          lineHeight: 1.7,
-          marginTop: 22,
-        }}
-      >
-        Local classroom planning estimates; actual prices and wages vary.
-        Historical 2024 single-filer tax model before credits and benefits.
-        Assumes 2,080 paid hours/year. Review household shares, dependent
-        healthcare and medical reserves. Review the app's assumptions before
-        relying on the plan.
-      </p>
-      {[
-        rented(a.housing) && a.rOut && "Renter's insurance",
-        find(HOUSING, a.housing)?.ins === "homeowners" &&
-          a.hOut &&
-          "Homeowner's insurance",
-        find(TRANS, a.trans)?.car && a.ciOut && "Car insurance",
-        find(TRANS, a.trans)?.car && a.crOut && "Registration",
-        a.hlOut && "Health insurance",
-      ].filter(Boolean).length > 0 && (
-        <p style={{ boxSizing: "border-box", fontSize: 10 }}>
-          Removed from scenario:{" "}
-          {[
-            rented(a.housing) && a.rOut && "renter's insurance",
-            find(HOUSING, a.housing)?.ins === "homeowners" &&
-              a.hOut &&
-              "homeowner's insurance",
-            find(TRANS, a.trans)?.car && a.ciOut && "car insurance",
-            find(TRANS, a.trans)?.car && a.crOut && "registration",
-            a.hlOut && "health insurance",
-          ]
-            .filter(Boolean)
-            .join(", ")}
-          . Financial or legal risks remain; see the itemized budget.
+      {removed.length > 0 && (
+        <p style={{ fontSize: 9 }}>
+          Excluded: {removed.join(", ")}. Financial or legal risks remain;
+          review the itemized budget.
         </p>
       )}
+      <p
+        style={{
+          color: C.muted,
+          fontSize: 8,
+          lineHeight: 1.5,
+          borderTop: `1px solid ${C.line}`,
+          paddingTop: 10,
+          marginTop: 12,
+        }}
+      >
+        Guide revised {GUIDE_REVISED}. Local classroom estimates; individual
+        quote dates were not supplied. Actual costs and wages vary. Historical
+        2024 single-filer tax model before credits and benefits. Wage estimates
+        are not job offers. Review dependent healthcare, bill shares and medical
+        reserves. Save a progress file to keep the full editable plan.
+      </p>
     </article>
   );
 }
@@ -4780,16 +5786,26 @@ function Results({
     salary = a.comparisonSalary;
   const setView = (resultView) => update({ resultView });
   const setScenario = (whatIfScenario) => update({ whatIfScenario });
-  const setSalary = (comparisonSalary, comparisonCareer = "") =>
+  const setSalary = (
+    comparisonSalary,
+    comparisonCareer = "",
+    schedule = null,
+  ) =>
     update({
       comparisonSalary,
       comparisonCareer,
-      ...(comparisonCareer ? { comparisonHours: 40, comparisonWeeks: 52 } : {}),
+      challengeHours: null,
+      ...(comparisonCareer
+        ? schedule || { comparisonHours: 40, comparisonWeeks: 52 }
+        : {}),
     });
   const b = useMemo(() => budget(a), [a]),
     screen = useRef(null),
     print = useRef(null),
     heading = useRef(null);
+  useEffect(() => {
+    if (!a.originalPlan) update({ originalPlan: captureOriginal(a) });
+  }, [a.originalPlan]);
   useEffect(() => {
     const before = () => {
       if (screen.current) screen.current.style.display = "none";
@@ -4819,6 +5835,7 @@ function Results({
     ["careers", "Careers"],
     ["paycheck", "Paycheck"],
     ["whatif", "What-if"],
+    ["reflection", "My next step"],
     ["sources", "Assumptions"],
   ];
   return (
@@ -4934,6 +5951,7 @@ function Results({
               b={b}
               small={small}
               onView={show}
+              update={update}
               onScenario={(s) => {
                 setScenario(s);
                 show("whatif");
@@ -4950,8 +5968,10 @@ function Results({
               a={a}
               b={b}
               small={small}
-              onSalary={(s, career) => {
-                setSalary(s, career);
+              update={update}
+              onEdit={onEdit}
+              onSalary={(s, career, schedule) => {
+                setSalary(s, career, schedule);
                 show("paycheck");
               }}
             />
@@ -4974,6 +5994,17 @@ function Results({
               setScenario={setScenario}
               update={update}
               small={small}
+            />
+          )}
+          {view === "reflection" && (
+            <ReflectionPage
+              a={a}
+              b={b}
+              update={update}
+              small={small}
+              onPrint={printPlan}
+              onView={show}
+              onEdit={onEdit}
             />
           )}
           {view === "sources" && <SourcesPage />}
@@ -5143,7 +6174,8 @@ function Welcome({ small, onStart, onExample, onLoad }) {
                 marginTop: 20,
               }}
             >
-              13 short steps · About 10–15 minutes · No account needed
+              13 short steps · Make a guess, build, compare and reflect · No
+              account needed
             </p>
           </section>
           <section
@@ -5384,6 +6416,7 @@ export default function App() {
       Object.keys(patch).some(
         (key) =>
           ![
+            ...LEARNING_FIELDS,
             "resultView",
             "whatIfScenario",
             "whatIfContribution",
@@ -5491,7 +6524,11 @@ export default function App() {
           step={step}
           setStep={setStep}
           onFinish={() => {
-            setA((previous) => ({ ...previous, resultView: "overview" }));
+            setA((previous) => ({
+              ...previous,
+              originalPlan: previous.originalPlan || captureOriginal(previous),
+              resultView: "overview",
+            }));
             enter("results");
           }}
           onSave={save}
